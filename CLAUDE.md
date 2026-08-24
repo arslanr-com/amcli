@@ -168,19 +168,34 @@ pages. Care at the call site is what failed, so the rules are tests now. Read
   pointing at nothing, since the server lays the whole graph out afresh every
   time and a blank sheet is worse than a moved one.
 - **Leaving a page is not asking it to forget.** `kept.js` holds, for the
-  visit, the query each page was last left under and where each picture's
-  camera was pointing; both are the reader's own work and neither can be
-  rebuilt from the file. A nav entry resolves its destination through
-  `lastParams` *on the click*, not into its href, which would be one filter out
-  of date by the second letter typed; the wordmark stays the bare route, so
-  there is still one way to Views whole. A camera is filed under the picture it
+  visit, three things no page can rebuild from the file: the query each page
+  was last left under, which page of a section the reader was on, and where
+  each picture's camera was pointing. A nav entry resolves its destination *on
+  the click*, never into its href, which would be one filter out of date by the
+  second letter typed — and it leads to the page they were on in that section,
+  so Views comes back to the drawing they had opened and zoomed into rather
+  than to the top of a table they were not reading. Arriving at a section's
+  list clears that; the drawing's own back button and the wordmark are the two
+  ways to the list. A camera is filed under the picture it
   was pointing at — `view:<id>`, or the graph's centre, hops and direction, the
   three things that make it a different picture — and taken again by
   `pz.resume(box)` on the first drawing after a mount, which refuses a seat
   that no longer meets the drawing for the same reason `keep` does. It is a
   centre and a scale, never a viewBox: the pane is not the same width on the
-  way back. None of it outlives the tab; what is worth keeping longer is in
-  localStorage, as the pins and the pane widths are.
+  way back. **Nothing is recorded, and nothing is rescaled on a resize, until
+  the camera has been pointed at something** — `placed` in `panzoom.js`. The
+  graph fetches its layout, so the ResizeObserver's first callback arrives
+  while the placeholder 100×100 box is still standing, and filing *that* wrote
+  a scale of "the pane over a hundred units" under the picture the reader was
+  coming back to, which `resume` then sat in: a hard zoom into the corner. A
+  drawing never showed it, because there `resume` runs in the same breath as
+  the SVG being inserted.
+  All three maps live in sessionStorage, because the tab is the boundary and a
+  reload is the same reader in the same place — a page's filters come back from
+  the URL on their own, and the camera has nowhere else to come from. The
+  payload carries the shape it was written with, and a tab holding an older one
+  is dropped whole. Nothing here outlives the tab; what is worth keeping longer
+  is in localStorage, as the pins and the pane widths are.
 - **One tree, not a tree beside a list.** `folderNodes` in `collection.js`
   builds it once and both rails draw it: the Views page narrows its table with
   it, and a drawing navigates with it. Three things it must keep doing —

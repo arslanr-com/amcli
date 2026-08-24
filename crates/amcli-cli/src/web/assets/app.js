@@ -11,7 +11,7 @@ import { parse, onRoute, href } from "./router.js";
 import { icon } from "./icons.js";
 import { iconButton, emptyState } from "./ui.js";
 import { openPalette, closePalette, paletteIsOpen } from "./palette.js";
-import { lastParams } from "./kept.js";
+import { lastParams, lastPlace, keepPlace } from "./kept.js";
 import { renderConcept } from "./pages/detail.js";
 import * as collection from "./pages/collection.js";
 import * as viewPage from "./pages/view.js";
@@ -112,15 +112,27 @@ const brand = document.getElementById("brand");
 brand.href = href("views");
 brand.title = "Views — the front of the model";
 
-// A nav entry goes back to the page as the reader left it — their folder,
-// their search, the layers they hid, the centre the graph was on — which is
-// what `kept.js` holds and what the bare route in the href does not. It is
-// resolved on the click rather than written into the href, because a href
-// built when the nav was would be one filter out of date by the second letter
-// typed into a box, and because the link that is copied, opened in a tab or
-// read off the status bar should be the plain page. The wordmark is the other
-// route: it goes to Views whole, which is how a reader gets out of a filter
-// they no longer want.
+// A nav entry goes back to the section as the reader left it: the page they
+// were on in it — Views is a list and eighty-six drawings, and someone who
+// opened one and zoomed into a corner of it was reading that drawing, not the
+// top of the table — and, on a list, their folder, their search, the layers
+// they hid, the centre the graph was on. That is what `kept.js` holds and what
+// the bare route in the href does not.
+//
+// It is resolved on the click rather than written into the href, because a
+// href built when the nav was would be one filter out of date by the second
+// letter typed into a box, and because the link that is copied, opened in a
+// tab or read off the status bar should be the plain page. The two ways back
+// to a section whole are the drawing's own back button and the wordmark.
+function whereTo(section) {
+  // A model that reloaded without that view leaves the id pointing at nothing,
+  // and "No such view" is not where anybody asked to go. Every deep page in a
+  // section is named after the kind it shows, so this is the whole check.
+  const at = lastPlace(section);
+  if (at && store.byId.get(at.id)?.kind === at.page) return href(at.page, at.id);
+  return href(section, null, lastParams(section));
+}
+
 const nav = document.getElementById("nav");
 function buildNav() {
   clear(nav);
@@ -130,7 +142,7 @@ function buildNav() {
       onclick: (e) => {
         if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
         e.preventDefault();
-        location.hash = href(n.page, null, lastParams(n.page));
+        location.hash = whereTo(n.page);
       },
     },
       icon(n.iconName),
@@ -306,6 +318,11 @@ function render(route) {
   // selected — not a second, wider copy of the inspector.
   const deep = (route.page === "element" || route.page === "relation") && route.id;
   const effective = deep ? { ...route, page: owner, id: null } : route;
+
+  // Where the reader now is in this section, for its nav entry to come back
+  // to. A list is the section's own start, so it records nothing and clears
+  // whatever drawing was there: arriving at the list *is* leaving the drawing.
+  keepPlace(owner, effective.page === owner ? null : { page: effective.page, id: effective.id });
 
   try {
     unmount = pageFor(effective).mount(main, effective) || (() => {});

@@ -13,12 +13,21 @@ export function attachPanZoom(svg, container, opts = {}) {
   // which is what recentring the graph does.
   const seat = () => (typeof opts.seat === "function" ? opts.seat() : opts.seat);
 
+  // Until `fit` or `resume` runs, `state` is a placeholder box that has never
+  // been pointed at anything, and a camera that is not looking anywhere is not
+  // a camera to remember or to rescale. This is not a nicety: the graph fetches
+  // its layout, so the ResizeObserver's first callback lands while the
+  // placeholder is still standing, and recording *that* filed a scale of "the
+  // pane over a hundred units" under the very picture the reader was coming
+  // back to — which `resume` then sat in, as a hard zoom into the corner.
+  let placed = false;
+
   const apply = () => {
     svg.setAttribute("viewBox", `${state.x} ${state.y} ${state.w} ${state.h}`);
     // Every move is remembered, because the reader never says when they have
     // finished looking. A pane with no width yet is not a place to remember.
     const cw = container.clientWidth;
-    if (opts.seat && cw > 0 && state.w > 0) {
+    if (opts.seat && placed && cw > 0 && state.w > 0) {
       keepCamera(seat(), { cx: state.x + state.w / 2, cy: state.y + state.h / 2, scale: cw / state.w });
     }
   };
@@ -33,6 +42,7 @@ export function attachPanZoom(svg, container, opts = {}) {
   const fit = (box, pad = 24) => {
     if (!box || box.w <= 0 || box.h <= 0) return;
     state.content = box;
+    placed = true;
     const cw = container.clientWidth || 800, ch = container.clientHeight || 600;
     const scale = Math.max(
       Math.min(cw / (box.w + 2 * pad), ch / (box.h + 2 * pad), opts.maxFitScale || 1.5),
@@ -58,6 +68,7 @@ export function attachPanZoom(svg, container, opts = {}) {
     at.x = was.cx - at.w / 2;
     at.y = was.cy - at.h / 2;
     if (box && !meets(at, box)) return false;
+    placed = true;
     Object.assign(state, at);
     if (box) state.content = box;
     apply();
@@ -65,6 +76,7 @@ export function attachPanZoom(svg, container, opts = {}) {
   };
 
   const actual = () => {
+    placed = true;
     const cw = container.clientWidth, ch = container.clientHeight;
     const cx = state.x + state.w / 2, cy = state.y + state.h / 2;
     state.w = cw; state.h = ch;
@@ -125,7 +137,7 @@ export function attachPanZoom(svg, container, opts = {}) {
   let lastSize = { w: container.clientWidth, h: container.clientHeight };
   const onResize = () => {
     const cw = container.clientWidth, ch = container.clientHeight;
-    if (!cw || !ch || !lastSize.w || !lastSize.h) { lastSize = { w: cw, h: ch }; return; }
+    if (!placed || !cw || !ch || !lastSize.w || !lastSize.h) { lastSize = { w: cw, h: ch }; return; }
     const scale = lastSize.w / state.w;
     const cx = state.x + state.w / 2, cy = state.y + state.h / 2;
     state.w = cw / scale; state.h = ch / scale;
