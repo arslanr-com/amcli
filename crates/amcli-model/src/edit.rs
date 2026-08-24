@@ -784,6 +784,18 @@ impl Model {
         Ok(())
     }
 
+    /// Replace, or clear, a view's documentation.
+    ///
+    /// A view carries documentation exactly as a concept does — the same
+    /// `<documentation>` first child, which Archi shows in the Properties view
+    /// — so this is `set_documentation` pointed at the diagram's node. Only
+    /// the way in was missing: `ViewId` is not a `ConceptId`, and every route
+    /// to the text went through one.
+    pub fn set_view_documentation(&mut self, view: ViewId, text: &str) -> Result<(), EditError> {
+        let node = self.view(view).node;
+        self.set_documentation_node(node, text)
+    }
+
     pub fn rename_view(&mut self, view: ViewId, name: &str) {
         let node = self.view(view).node;
         self.doc.set_attr(node, "name", name);

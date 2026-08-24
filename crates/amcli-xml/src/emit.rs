@@ -29,12 +29,22 @@ fn write_node(doc: &Doc, w: &mut impl Write, id: NodeId, depth: usize) -> io::Re
     }
 
     let live: Vec<NodeId> = n.children.iter().copied().filter(|c| !doc.node(*c).removed).collect();
+    // Every element child removed. What is left between the tags is the
+    // indentation they sat in, not content — and EMF writes an element with
+    // neither children nor text as `<a/>`, which is how this one was written
+    // before anything was put in it. Without this, adding a documentation and
+    // then clearing it left `<element …></element>` behind: the two edits are
+    // two runs of amcli, and the second one parses a file where the `/>` is
+    // already gone, so nothing else can know to put it back. `n.children` is
+    // the test rather than `live`, so an element that was `<a></a>` in the
+    // source and is dirty for some other reason keeps the shape it had.
+    let emptied = !n.children.is_empty() && live.is_empty() && n.text_override.is_none();
     let has_text = n.text_override.as_deref().is_some_and(|t| !t.is_empty())
-        || (live.is_empty() && !n.self_closing && !n.tail.is_empty());
+        || (live.is_empty() && !n.self_closing && !n.tail.is_empty() && !emptied);
     let has_content = !live.is_empty() || has_text;
 
-    write_open_tag(doc, w, id, has_content)?;
-    if !has_content && n.self_closing {
+    write_open_tag(doc, w, id, has_content, emptied)?;
+    if !has_content && (n.self_closing || emptied) {
         return Ok(()); // the open tag already closed it
     }
 
@@ -119,7 +129,13 @@ fn write_name(doc: &Doc, w: &mut impl Write, n: &NodeData) -> io::Result<()> {
     }
 }
 
-fn write_open_tag(doc: &Doc, w: &mut impl Write, id: NodeId, has_content: bool) -> io::Result<()> {
+fn write_open_tag(
+    doc: &Doc,
+    w: &mut impl Write,
+    id: NodeId,
+    has_content: bool,
+    emptied: bool,
+) -> io::Result<()> {
     let n = doc.node(id);
 
     if n.state == NodeState::Inserted {
@@ -175,6 +191,11 @@ fn write_open_tag(doc: &Doc, w: &mut impl Write, id: NodeId, has_content: bool) 
         // Gained children, so it can no longer be self-closing.
         let trimmed: Vec<u8> = tail.iter().copied().filter(|b| *b != b'/').collect();
         w.write_all(&trimmed)
+    } else if emptied && !has_content && !n.self_closing {
+        // Lost its last child, so it closes itself again — the `>` becomes `/>`
+        // and whatever spacing the source had before it is kept.
+        w.write_all(&tail[..tail.len().saturating_sub(1)])?;
+        w.write_all(b"/>")
     } else {
         w.write_all(tail)
     }

@@ -20,6 +20,99 @@ impl Ctx {
     }
 }
 
+/// Rows, plus the two things a reader has to know about a cap: how many there
+/// were, and whether they are looking at all of them.
+///
+/// Every command that answers with a capped list goes through this. Four of
+/// them used to truncate in silence — `neighbors`, `impact`, `ancestors` and
+/// `cycles` reported a `total` in the envelope and nothing at all in text —
+/// and the rest said so in a note, which is exactly what `-q` drops. Either
+/// way an agent counting by type got fifty of eighty-three and no way to know
+/// it, which is not a smaller answer but a wrong one. It is a warning now, and
+/// a warning is said whatever the flags.
+fn capped(rows: Vec<Row>, total: usize) -> Output {
+    let shown = rows.len();
+    let out = Output::rows(rows).meta_n("total", total as i64).meta_b("truncated", shown < total);
+    if shown < total {
+        return out.warn(format!("showing {shown} of {total} — `-l 0` for all of them"));
+    }
+    out
+}
+
+/// What a projection may ask a record for that it does not print by default.
+///
+/// `--fields` was a filter over the columns a command had already decided on,
+/// so a field the *selector* understands — `--fields name,prop:reg-id`, asked
+/// right after `query 'prop:reg-id=RG-14'` had matched on that very field —
+/// projected to nothing, said `no such field` on stderr and left reading one
+/// property to fetching the whole record as JSON. A field you can filter on is
+/// a field you can print. A record that names a concept or a view now carries
+/// whatever the projection asks for: its documentation, its layer, its kind,
+/// and any property by key, matched case-insensitively as the filter matches
+/// it.
+///
+/// They are not printed unasked because a documentation column is a paragraph
+/// and a property column is empty on most of a model — and because a column
+/// appearing in the middle of a record would repoint every `cut -f5` already
+/// written against it. Asked for, they go on the end, and a command that
+/// already prints one keeps its own.
+pub fn carry(mut out: Output, m: &Model, fields: Option<&Vec<String>>) -> Output {
+    let asked: Vec<&str> = fields
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .map(String::as_str)
+        .filter(|f| matches!(*f, "doc" | "layer" | "kind") || f.starts_with("prop:"))
+        .collect();
+    if asked.is_empty() {
+        return out;
+    }
+    for row in &mut out.rows {
+        let Some(id) = row.0.iter().find(|(k, _)| k.as_ref() == "id").and_then(|(_, v)| match v {
+            crate::output::Value::Str(s) => Some(s.clone()),
+            _ => None,
+        }) else {
+            continue;
+        };
+        // A view is a node with documentation and properties, exactly as a
+        // concept is, so `view list --fields name,doc` is the same mechanism.
+        let (node, kind, layer) = if let Some(c) = m.concept_by_id(&id) {
+            let c = m.concept(c);
+            (
+                c.node,
+                if c.kind.is_relationship() { "relation" } else { "element" },
+                c.kind.layer().map(|l| l.as_str().to_string()),
+            )
+        } else if let Some(v) = m.view_by_id(&id) {
+            let v = m.view(v);
+            (v.node, if v.is_sketch { "sketch" } else { "view" }, None)
+        } else {
+            continue;
+        };
+        for f in &asked {
+            if row.0.iter().any(|(k, _)| k.as_ref() == *f) {
+                continue;
+            }
+            let value = match *f {
+                "doc" => m.documentation(node).unwrap_or_default(),
+                "kind" => kind.to_string(),
+                "layer" => layer.clone().unwrap_or_default(),
+                key => m
+                    .properties(node)
+                    .into_iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(&key["prop:".len()..]))
+                    .map(|(_, v)| v)
+                    .unwrap_or_default(),
+            };
+            row.0.push((
+                std::borrow::Cow::Owned((*f).to_string()),
+                crate::output::Value::Str(value),
+            ));
+        }
+    }
+    out
+}
+
 /// Resolve a selector to exactly one concept, or fail with something the caller
 /// can act on: candidates to choose from, or nearby names to try.
 fn one(g: &Graph<'_>, sel: &str) -> Result<ConceptId, CliError> {
@@ -294,10 +387,9 @@ pub fn search(g: &Graph<'_>, ctx: &Ctx, query: &str, ty: Option<&str>) -> Result
         })
         .collect();
 
-    let mut out =
-        Output::rows(rows).meta_n("total", total as i64).meta_b("truncated", shown < total);
+    let mut out = capped(rows, total);
     if shown < total {
-        out = out.note(format!("{total} total, showing {shown} — narrow with -t, or raise -l"));
+        out = out.note("narrow with -t, or raise -l");
     }
     Ok(out)
 }
@@ -320,12 +412,7 @@ pub fn list(
     let total = all.len();
     let shown = ctx.cap(total);
     let rows = all.iter().take(shown).map(|c| concept_row(m, g, *c)).collect();
-    let mut out =
-        Output::rows(rows).meta_n("total", total as i64).meta_b("truncated", shown < total);
-    if shown < total {
-        out = out.note(format!("{total} total, showing {shown}"));
-    }
-    Ok(out)
+    Ok(capped(rows, total))
 }
 
 pub fn query(g: &Graph<'_>, ctx: &Ctx, expr: &str) -> Result<Output, CliError> {
@@ -339,12 +426,7 @@ pub fn query(g: &Graph<'_>, ctx: &Ctx, expr: &str) -> Result<Output, CliError> {
     let total = matches.len();
     let shown = ctx.cap(total);
     let rows = matches.iter().take(shown).map(|c| concept_row(g.model(), g, *c)).collect();
-    let mut out =
-        Output::rows(rows).meta_n("total", total as i64).meta_b("truncated", shown < total);
-    if shown < total {
-        out = out.note(format!("{total} total, showing {shown}"));
-    }
-    Ok(out)
+    Ok(capped(rows, total))
 }
 
 pub fn neighbors(
@@ -372,7 +454,7 @@ pub fn neighbors(
                 .s("direction", if a.dir == Dir::Out { "out" } else { "in" })
         })
         .collect();
-    Ok(Output::rows(rows).meta_n("total", total as i64))
+    Ok(capped(rows, total))
 }
 
 pub fn trace(
@@ -438,7 +520,7 @@ pub fn trace(
         .meta_n("edges", sub.edges.len() as i64)
         .meta_b("truncated", sub.truncated);
     if sub.truncated {
-        out = out.note("the walk hit its node limit; raise -l or lower -n");
+        out = out.warn("the walk hit its node limit; raise -l or lower -n");
     }
     Ok(out)
 }
@@ -525,7 +607,7 @@ pub fn impact(
         })
         .collect();
 
-    Ok(Output::rows(rows).meta_n("total", total as i64).meta_b("truncated", truncated))
+    Ok(capped(rows, total).meta_b("truncated", truncated))
 }
 
 pub fn containment(g: &Graph<'_>, ctx: &Ctx, sel: &str, up: bool) -> Result<Output, CliError> {
@@ -538,7 +620,7 @@ pub fn containment(g: &Graph<'_>, ctx: &Ctx, sel: &str, up: bool) -> Result<Outp
     };
     let total = found.len();
     let rows = found.iter().take(ctx.cap(total)).map(|c| concept_row(m, g, *c)).collect();
-    Ok(Output::rows(rows).meta_n("total", total as i64))
+    Ok(capped(rows, total))
 }
 
 pub fn cycles(g: &Graph<'_>, ctx: &Ctx, rel: Option<&str>) -> Result<Output, CliError> {

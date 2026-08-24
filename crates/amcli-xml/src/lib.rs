@@ -338,6 +338,16 @@ impl Doc {
             return t.to_string();
         }
         if !n.children.iter().any(|c| !self.node(*c).removed) && !n.self_closing {
+            // Children that have all been removed leave their indentation
+            // behind, and that whitespace is not content: `to_bytes` writes
+            // the element as the empty one it now is, so reporting the
+            // indentation as text here would make the document say one thing
+            // and write another. `has_text` has always taken this view — it
+            // trims before deciding — and a node that never had children keeps
+            // its text, whitespace and all.
+            if !n.children.is_empty() {
+                return String::new();
+            }
             return unescape(str_of(n.tail.slice(&self.src)));
         }
         String::new()

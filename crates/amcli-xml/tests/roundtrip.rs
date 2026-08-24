@@ -243,3 +243,34 @@ fn malformed_input_is_an_error_not_a_panic() {
     assert!(Doc::parse(b"<a>".to_vec()).is_err());
     assert!(Doc::parse(vec![0xff, 0xfe, 0x00]).is_err());
 }
+
+/// An element that loses its last child closes itself again.
+///
+/// Adding a documentation and then clearing it is two runs of amcli: the first
+/// expands `<element …/>` to hold the child, the second parses a file where
+/// the `/>` is already gone. Without this the undone edit left
+/// `<element …></element>` behind — a scar on a file nothing had changed.
+#[test]
+fn an_emptied_element_closes_itself_again() {
+    let src = "<a><b/></a>";
+    let mut doc = Doc::parse(src.as_bytes().to_vec()).unwrap();
+    let b = doc.child_named(doc.root(), "b").unwrap();
+    doc.remove_subtree(b);
+    assert_eq!(String::from_utf8(doc.to_bytes()).unwrap(), "<a/>");
+
+    // Indentation the children stood in is not text, and the document must
+    // report what it is about to write: proptest caught these two disagreeing.
+    let src = "<a>\n  <b/>\n</a>";
+    let mut doc = Doc::parse(src.as_bytes().to_vec()).unwrap();
+    let b = doc.child_named(doc.root(), "b").unwrap();
+    doc.remove_subtree(b);
+    assert_eq!(doc.text(doc.root()), "");
+    assert_eq!(String::from_utf8(doc.to_bytes()).unwrap(), "<a/>");
+
+    // An element that never had children keeps its text, whitespace and all.
+    let src = "<a>   </a>";
+    let mut doc = Doc::parse(src.as_bytes().to_vec()).unwrap();
+    doc.set_attr(doc.root(), "k", "v");
+    assert_eq!(doc.text(doc.root()), "   ");
+    assert_eq!(String::from_utf8(doc.to_bytes()).unwrap(), r#"<a k="v">   </a>"#);
+}

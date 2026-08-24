@@ -54,6 +54,7 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.rename","view":"Payments","name":"Payments and Checkout"}
     {"op":"view.move","view":"Payments","folder":"/Views/Programme"}
     {"op":"view.viewpoint","view":"Payments","viewpoint":"application_cooperation"}
+    {"op":"view.doc","view":"Payments","text":"What this drawing is for. Empty clears it."}
     {"op":"view.delete","view":"Old Sketch"}
 
 A view built member by member — create it, add each element, lay it out —

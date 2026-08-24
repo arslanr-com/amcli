@@ -135,6 +135,8 @@ enum Op {
     ViewMove { view: String, folder: String },
     #[serde(rename = "view.viewpoint")]
     ViewViewpoint { view: String, viewpoint: String },
+    #[serde(rename = "view.doc")]
+    ViewDoc { view: String, text: String },
 }
 
 fn default_depth() -> u32 {
@@ -421,6 +423,9 @@ fn apply_one(
             "view.viewpoint",
             ViewCmd::Viewpoint { view: view.clone(), viewpoint: viewpoint.clone() },
         ),
+        Op::ViewDoc { view, text } => {
+            view_op(opts, m, "view.doc", ViewCmd::Doc { view: view.clone(), text: text.clone() })
+        }
         Op::FolderAdd { parent, name } => {
             let p = folder_of(m, parent)?;
             let before = m.folders().count();

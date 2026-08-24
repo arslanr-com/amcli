@@ -19,7 +19,7 @@ touches the document must preserve that property.
 | Crate | Job |
 |---|---|
 | `crates/amcli-xml` | Format-preserving XML tree with byte spans. Knows nothing about ArchiMate. |
-| `crates/amcli-model` | The ArchiMate IR: types, folders, concepts, views, containers (plain XML / ZIP / grafico). |
+| `crates/amcli-model` | The ArchiMate IR: types, folders, concepts, views, containers (plain XML or the ZIP an embedded image makes of it). |
 | `crates/amcli-view` | View geometry, layout, notation — and `icons.rs`, the type icons. |
 | `crates/amcli-render` | A compiled view to SVG, or to PNG through `resvg` (pure Rust, so the binary stays static). |
 | `crates/amcli-cli` | The binary; `src/web/` is `amcli web`, the read-only viewer. |
@@ -272,6 +272,33 @@ The refresh procedure is in the header of PROVENANCE.toml itself.
   before assuming XML.
 - EMF omits attributes whose value equals the schema default, so writing one back
   explicitly breaks byte identity.
+- **An element that loses its last child closes itself again.** EMF writes an
+  empty element as `<a/>`, and adding a documentation and then clearing it is
+  two runs of amcli — the second parses a file where the `/>` is already gone,
+  so `emit.rs` collapses an emptied element rather than leaving
+  `<element …></element>` behind. `Doc::text` agrees with it: the whitespace
+  the children stood in is indentation, not content. Proptest caught those two
+  disagreeing, and `an_emptied_element_closes_itself_again` holds them together.
+
+## Two rules the output contract added the hard way
+
+Both came from an agent reading a real model and getting a confidently wrong
+answer. Neither is enforced by a type, so they are worth knowing before adding
+a command.
+
+- **A field you can filter on is a field you can print.** `--fields` is a
+  filter over columns, so a name the *selector* understands — `prop:reg-id`,
+  `doc`, `layer`, `kind` — projected to nothing and said "no such field" on
+  stderr. `read::carry` is the one place that answers it, applied to every read
+  and to `view` in `main.rs`, and it appends: a column in the middle repoints
+  every `cut -f5` already written. Adding a filterable field means teaching
+  `carry` to print it.
+- **A capped answer says so, and `-q` cannot silence it.** `Output::warnings`
+  is printed whatever the format and whatever the flags, because it is a caveat
+  about the answer rather than commentary about the run — `-q` still drops the
+  header and the notes. Every capped list goes through `read::capped`; four
+  commands used to truncate in silence, and a count taken from fifty of
+  eighty-three rows is not a smaller answer but a wrong one.
 
 ## Two process-wide things, and what they cost
 

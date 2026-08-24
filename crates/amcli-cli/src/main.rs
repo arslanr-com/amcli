@@ -399,7 +399,10 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Element(_) | Command::Relation(_) | Command::Folder(_) | Command::Prop(_) => {
             return write::run(cli_write_opts(cli), &mut model, &cli.command_write());
         }
-        Command::View(c) => return view::run(&write_opts(cli), &mut model, c),
+        Command::View(c) => {
+            let out = view::run(&write_opts(cli), &mut model, c)?;
+            return Ok(read::carry(out, &model, cli.fields.as_ref()));
+        }
         Command::Apply { file } => {
             return apply::run(&write_opts(cli), &mut model, Some(file.as_str()));
         }
@@ -411,7 +414,9 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
     }
 
     let graph = Graph::build(&model);
-    match &cli.command {
+    // One place where a projection can reach back into the model for what the
+    // record did not print: every read answers through here.
+    let out = match &cli.command {
         Command::Get { selector, full } => read::get(&graph, &ctx, selector, *full),
         Command::Search { query, r#type } => read::search(&graph, &ctx, query, r#type.as_deref()),
         Command::List { r#type, folder } => {
@@ -452,7 +457,8 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         | Command::Init { .. }
         | Command::Web { .. }
         | Command::Validate { .. } => unreachable!("dispatched above"),
-    }
+    }?;
+    Ok(read::carry(out, &model, cli.fields.as_ref()))
 }
 
 impl Cli {

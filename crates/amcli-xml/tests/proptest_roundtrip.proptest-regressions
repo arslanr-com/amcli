@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 5c2e7d9aa3d51ff52f56f9b13510b5f54475bc45d6140b44ac90faf4ab185f3e
 cc 2a366ea034c282a17ac32d65c5754d1b846bb9562118ba6c8bff5dba74ce25c5
+cc 96f569fbef4a05f1feb0b21d6e1e03834abd7139559d5fd36bc1b935ba627072 # shrinks to pick = 54, ops = [RemoveSubtree { node: 48 }]

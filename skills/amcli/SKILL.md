@@ -116,6 +116,21 @@ the same shape — `{"ok":…,"data":[…],"meta":{…}}`, success or failure �
     amcli query 'layer=Application' --count    # ask "how many" FIRST, always
     amcli search auth -l 10 --fields id,name   # project down
     amcli list --fields -documentation         # or drop a field
+    amcli query 'prop:reg-id=RG-14' --fields name,prop:reg-id   # print what you filtered on
+
+**A field you can filter on is a field you can print.** Besides the columns a
+command prints by default, `--fields` takes `doc`, `layer`, `kind` and any
+`prop:KEY` — matched case-insensitively, as the filter matches it — and the
+value is appended as a column, empty where the concept has none. That is the
+route to one property: you do not need `-F json` to read it. It works on
+`view list` too.
+
+**A capped answer says so on stderr, and `-q` cannot silence it.** Every list
+is cut to `-l` (50 by default) and prints `showing 50 of 83` when it cuts;
+`-l 0` gives all of them, and `--count` gives the true total without the rows.
+`-q` drops the header and the notes — never that line, and never the
+`"truncated"` field in the JSON envelope. If you are counting, count with
+`--count` or check the line.
 
 `--count` and `--dry-run` never write, on any command.
 
@@ -255,6 +270,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view rename "Refund Flow" "Refunds"
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
     amcli view viewpoint "Refunds" application_cooperation   # or "" to clear
+    amcli view doc "Refunds" "What this drawing is for."      # or "" to clear
     amcli view delete "Refunds"                # removes the drawing, no concept
     amcli view render "Refunds" -o refund.svg
     amcli view render "Refunds" -o refund.png --scale 2   # a raster, from the extension
@@ -274,6 +290,11 @@ what you want when a view grew past the one it was filed under. The id must be
 one of the 25 ArchiMate ones — a wrong one is exit 2 and the hint lists them
 all — and `""` clears it. Nothing is enforced by it: putting a concept the
 viewpoint does not cover on the view is a note on stderr, not a refusal.
+
+A view carries **documentation** exactly as a concept does, and Archi shows it
+in the properties. `view doc` writes it (`"op":"view.doc"` in a batch), `""`
+clears it, and `view list --fields name,doc` reads it back — a drawing is the
+one thing you hand to a person, so say on it what it is for.
 
 **Past about a dozen views, file them in folders.** `create` and `auto` take
 `-f /Views/<name>` (`"folder"` in a batch), `view move` re-files one already

@@ -79,6 +79,8 @@ pub enum ViewCmd {
     Delete { view: String },
     /// Change a view's name.
     Rename { view: String, name: String },
+    /// Replace a view's documentation. An empty string removes it.
+    Doc { view: String, text: String },
     /// Set or clear a view's viewpoint.
     Viewpoint {
         view: String,
@@ -137,6 +139,7 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
         }
         ViewCmd::Delete { view } => delete(opts, m, view),
         ViewCmd::Rename { view, name } => rename(opts, m, view, name),
+        ViewCmd::Doc { view, text } => doc(opts, m, view, text),
         ViewCmd::Viewpoint { view, viewpoint } => set_viewpoint(opts, m, view, viewpoint),
         ViewCmd::Move { view, folder } => move_view(opts, m, view, folder),
         ViewCmd::Render { view, draw_as, out, margin, scale } => {
@@ -367,6 +370,23 @@ fn rename(opts: &Opts, m: &mut Model, view: &str, name: &str) -> Result<Output, 
         .s("id", m.view(v).id.clone())
         .s("from", old)
         .s("to", name.to_string())
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+/// Replace or clear a view's documentation.
+///
+/// A drawing is the one thing in a model an agent hands to a person, and the
+/// paragraph saying what it is for had nowhere to live: `element doc` takes a
+/// concept, and a view is not one. It is read back with
+/// `view list --fields name,doc`.
+fn doc(opts: &Opts, m: &mut Model, view: &str, text: &str) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    m.set_view_documentation(v, text)
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("id", m.view(v).id.clone())
+        .n("chars", text.chars().count() as i64)
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }

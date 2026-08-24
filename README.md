@@ -53,8 +53,9 @@ http://127.0.0.1:52341/
   in and out, every view it is on. Every element and relationship sits in a
   table you can filter by layer, type, folder and name. The **graph** starts
   from any element, walks out to a chosen depth, filters by layer and
-  relationship type, expands on double-click and lets you drag things where
-  you want them. Stats, search (⌘K), light and dark, SVG and PNG a click away.
+  relationship type, and recentres on whatever you double-click — laid out by
+  the same code `view auto` runs, so it is the drawing amcli would file.
+  Search (⌘K), light and dark, SVG and PNG a click away.
   The page **follows the file**: an agent editing with amcli and a person
   watching in a browser see the same model, batch by batch, without a
   reload. Nothing on the page writes; the only verb it knows is GET.
@@ -135,6 +136,37 @@ Prebuilt for macOS (Apple silicon, Intel), Linux (x86_64, aarch64, static
 musl) and Windows x64. `amcli skill install` writes the skill from the binary
 if you went binary-first.
 
+### Updating
+
+**The binary updates itself.** The skill runs the installer at the start of
+every session; it stops as soon as it sees that the newest release is already
+installed, and keeps the binary you have when there is no network. So an agent
+that has the skill is on the current binary without being asked.
+
+**The skill is updated by the tool that installed it:**
+
+```bash
+npx skills update amcli      # this skill, from the repository's default branch
+npx skills update            # or every skill you have
+npx skills list              # what is installed, and where each came from
+```
+
+It asks whether you mean the project's skills or your global ones; `-y` takes
+the obvious answer, `-g` and `-p` say which outright — that is the form for a
+script.
+
+If you installed binary-first, `amcli skill install` writes the skill the
+binary carries — re-run it after upgrading the binary, and pass `--force` to
+overwrite a copy you have edited. It refuses outright when `npx skills` owns
+the directory, because that install has its own lock file and would overwrite
+the change on its next update; `npx skills update amcli` is the way in there.
+
+One thing worth knowing when the two disagree: the skill ships from the default
+branch and the binary from the newest tag, so the skill is normally the *newer*
+of the two. Never "fix" that by reinstalling the skill from an older binary —
+it would talk you down a version. `amcli` reconciles it itself, and says so
+when a command it is asked for does not exist yet.
+
 ## A tour
 
 ```bash
@@ -178,9 +210,8 @@ into the type tables and relationship matrix by `cargo xtask codegen`.
 ## Status
 
 Read, write, validate, views, SVG and PNG, and the web viewer all work and are
-tested. Not yet: coArchi's grafico directory format and Open Exchange XML. No
-Homebrew tap on purpose — `brew` does not exist in the containers agents run
-in.
+tested against real Archi files. A `.archimate` file is read whether it is
+plain XML or the ZIP an embedded image makes of it.
 
 ## Licence and trademarks
 

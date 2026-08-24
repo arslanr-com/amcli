@@ -1067,7 +1067,104 @@ fn the_view_field_reports_how_many_and_which() {
     }
 }
 
-/// An unknown flag used to end with "this amcli is older than that document",
+/// A field you can filter on is a field you can print.
+///
+/// `--fields` was a filter over the columns a command had already chosen, so
+/// `--fields name,prop:reg-id` — asked straight after `query 'prop:reg-id=…'`
+/// had matched on that field — projected the column away, said "no such
+/// field" on stderr, and left reading one property to fetching the whole
+/// record as JSON.
+#[test]
+fn a_projection_can_ask_for_what_the_record_does_not_print() {
+    let m = Model::new("testmodel1.archimate");
+    assert_eq!(m.run(&["element", "add", "Goal", "Ledger", "--doc", "Where the money is."]).0, 0);
+    assert_eq!(m.run(&["prop", "set", "Ledger", "reg-id", "RG-14"]).0, 0);
+
+    let (code, out, err) = m.run(&["query", "prop:reg-id=RG-14", "--fields", "name,prop:reg-id"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(out.trim(), "Ledger\tRG-14", "the property it just filtered on: {out}");
+    assert!(!err.contains("no such field"), "{err}");
+    assert!(err.contains("prop:reg-id"), "the header names the column: {err}");
+
+    // Documentation, layer and kind are on the concept and too big or too rare
+    // for every row; asked for, they come.
+    let (_, out, _) = m.run(&["query", "name=Ledger", "--fields", "name,kind,layer,doc", "-q"]);
+    assert_eq!(out.trim(), "Ledger\telement\tMotivation\tWhere the money is.");
+
+    // A property nothing carries is an empty column, not a missing one: a
+    // dropped column is what made the miss silent in the first place.
+    let (_, out, err) = m.run(&["query", "name=Ledger", "--fields", "name,prop:nobody", "-q"]);
+    assert_eq!(out.trim_end_matches('\n'), "Ledger\t", "an absent property is an empty column");
+    assert!(!err.contains("no such field"), "{err}");
+
+    // A command that prints a column of its own keeps it: `trace` writes
+    // `kind` to tell a node from an edge.
+    let (_, out, _) = m.run(&["trace", "Ledger", "-n", "1", "--fields", "kind,name", "-q"]);
+    assert!(out.lines().all(|l| l.starts_with("node\t")), "trace kept its own kind: {out}");
+}
+
+/// A view carries documentation exactly as a concept does, and until this
+/// there was no way in: `element doc` takes a concept, and a view is not one.
+#[test]
+fn a_view_has_documentation() {
+    let m = Model::new("testmodel1.archimate");
+    let (_, out, _) = m.run(&["view", "list", "--fields", "id", "-q"]);
+    let view = out.lines().next().unwrap().trim().to_string();
+
+    let before = std::fs::read(m.path()).unwrap();
+    let (code, _, err) = m.run(&["view", "doc", &view, "What this drawing is for."]);
+    assert_eq!(code, 0, "{err}");
+
+    let (_, out, _) = m.run(&["view", "list", "--fields", "id,doc", "-q"]);
+    let row = out.lines().find(|l| l.starts_with(&view)).unwrap();
+    assert_eq!(row.trim(), format!("{view}\tWhat this drawing is for."));
+
+    // An empty string removes it, and removing it puts the file back exactly
+    // as it was — the round trip this whole tool stands on.
+    assert_eq!(m.run(&["view", "doc", &view, ""]).0, 0);
+    assert_eq!(std::fs::read(m.path()).unwrap(), before, "clearing left the file changed");
+}
+
+/// Truncation is not commentary, so `-q` may not silence it.
+///
+/// `-q` drops the header and the notes, which are decoration. It also dropped
+/// "83 total, showing 50", and four commands never said it at all — so an
+/// agent counting by type got fifty of eighty-three and no way to know it,
+/// which is not a smaller answer but a wrong one.
+#[test]
+fn a_capped_answer_says_so_whatever_the_flags() {
+    let m = Model::new("testmodel1.archimate");
+    // `neighbors` is one of the four that used to truncate in silence, and the
+    // fixture's actor has a single neighbour — one more, and a cap of one cuts.
+    assert_eq!(m.run(&["element", "add", "BusinessRole", "Second Role"]).0, 0);
+    assert_eq!(m.run(&["relation", "add", "Assignment", "Business Actor", "Second Role"]).0, 0);
+
+    for args in [
+        &["query", "kind=element", "-l", "1", "-q"][..],
+        &["list", "-l", "1", "-q"][..],
+        &["search", "e", "-l", "1", "-q"][..],
+        &["neighbors", "Business Actor", "-l", "1", "-q"][..],
+    ]
+    .into_iter()
+    {
+        let (code, out, err) = m.run(args);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(out.lines().count(), 1, "{args:?} printed more than the cap");
+        assert!(err.contains("showing 1 of"), "{args:?} truncated in silence: {err:?}");
+        assert!(err.contains("-l 0"), "{args:?} did not say how to see the rest: {err:?}");
+    }
+
+    // Uncapped, it says nothing: a caveat that is always there is noise.
+    let (_, _, err) = m.run(&["query", "kind=element", "-l", "0", "-q"]);
+    assert!(!err.contains("showing"), "warned about a complete answer: {err:?}");
+
+    // The envelope keeps saying it too, for a reader that parses rather than
+    // reads.
+    let (_, out, _) = m.run(&["query", "kind=element", "-l", "2", "-F", "json"]);
+    assert!(out.contains(r#""truncated":true"#), "{out}");
+}
+
+/// An unknown flag used to end with "this amcli is older than that document","
 /// which sent a reader off to reinstall a current binary over a misremembered
 /// flag name. An unknown *subcommand* is the case that footer is for.
 #[test]

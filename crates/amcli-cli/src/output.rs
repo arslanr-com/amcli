@@ -15,6 +15,7 @@
 //! stderr side of that and never changes stdout — including the JSON envelope,
 //! so one jq path holds whether or not the flag is there.
 
+use std::borrow::Cow;
 use std::fmt::Write as _;
 use std::io::Write;
 
@@ -82,41 +83,47 @@ impl Format {
 }
 
 /// One record. Fields are ordered; the order is the documented column order.
+///
+/// The key is a `Cow` because most of them are written in the source — `id`,
+/// `name`, `folder` — while one kind is not: `prop:reg-id` is a column named
+/// by the reader on the command line, and a projection that can only name
+/// columns the source already knew is the whole of what `--fields prop:KEY`
+/// used to fail at.
 #[derive(Clone, Debug, Default)]
-pub struct Row(pub Vec<(&'static str, Value)>);
+pub struct Row(pub Vec<(Cow<'static, str>, Value)>);
 
 impl Row {
     pub fn new() -> Row {
         Row(Vec::new())
     }
 
-    pub fn s(mut self, k: &'static str, v: impl Into<String>) -> Row {
-        self.0.push((k, Value::Str(v.into())));
+    pub fn s(mut self, k: impl Into<Cow<'static, str>>, v: impl Into<String>) -> Row {
+        self.0.push((k.into(), Value::Str(v.into())));
         self
     }
 
-    pub fn n(mut self, k: &'static str, v: i64) -> Row {
-        self.0.push((k, Value::Num(v)));
+    pub fn n(mut self, k: impl Into<Cow<'static, str>>, v: i64) -> Row {
+        self.0.push((k.into(), Value::Num(v)));
         self
     }
 
-    pub fn b(mut self, k: &'static str, v: bool) -> Row {
-        self.0.push((k, Value::Bool(v)));
+    pub fn b(mut self, k: impl Into<Cow<'static, str>>, v: bool) -> Row {
+        self.0.push((k.into(), Value::Bool(v)));
         self
     }
 
     /// The row without a column, for a caller that reports that fact itself.
     pub fn without(mut self, k: &str) -> Row {
-        self.0.retain(|(key, _)| *key != k);
+        self.0.retain(|(key, _)| key != k);
         self
     }
 
-    pub fn list(mut self, k: &'static str, v: Vec<Row>) -> Row {
-        self.0.push((k, Value::Rows(v)));
+    pub fn list(mut self, k: impl Into<Cow<'static, str>>, v: Vec<Row>) -> Row {
+        self.0.push((k.into(), Value::Rows(v)));
         self
     }
 
-    pub fn opt(self, k: &'static str, v: Option<String>) -> Row {
+    pub fn opt(self, k: impl Into<Cow<'static, str>>, v: Option<String>) -> Row {
         match v {
             Some(v) => self.s(k, v),
             None => self,
@@ -127,9 +134,9 @@ impl Row {
     fn project(&mut self, fields: &[String]) {
         let subtractive = fields.iter().all(|f| f.starts_with('-'));
         if subtractive {
-            self.0.retain(|(k, _)| !fields.iter().any(|f| &f[1..] == *k));
+            self.0.retain(|(k, _)| !fields.iter().any(|f| f[1..] == **k));
         } else {
-            self.0.retain(|(k, _)| fields.iter().any(|f| f == *k));
+            self.0.retain(|(k, _)| fields.iter().any(|f| f.as_str() == &**k));
         }
     }
 }
@@ -155,6 +162,12 @@ pub struct Output {
     pub meta: Vec<(&'static str, Value)>,
     /// Shown on stderr for a human; never on stdout.
     pub notes: Vec<String>,
+    /// Said whatever the flags: not commentary but a caveat about the answer
+    /// itself — so far, only that it is not all of it. `-q` quietens the
+    /// header and the notes, which are decoration; a reader who cannot see
+    /// that they are holding fifty of eighty-three rows counts fifty and is
+    /// wrong, and no flag should be able to arrange that.
+    pub warnings: Vec<String>,
     /// What to do after the rows are printed and stdout is flushed. `web` is
     /// the one command that keeps running after it has answered, and its
     /// answer — the URL — has to be out before it starts serving.
@@ -191,6 +204,11 @@ impl Output {
 
     pub fn note(mut self, n: impl Into<String>) -> Output {
         self.notes.push(n.into());
+        self
+    }
+
+    pub fn warn(mut self, n: impl Into<String>) -> Output {
+        self.warnings.push(n.into());
         self
     }
 
@@ -234,6 +252,12 @@ impl Printer {
             return;
         }
 
+        // Before the rows, not after: on a terminal both streams land in the
+        // same scrollback, and a caveat under a screenful of output is a
+        // caveat nobody reads.
+        for w in &out.warnings {
+            let _ = writeln!(stderr, "{w}");
+        }
         match self.format {
             Format::Text => self.print_text(&out, stdout, stderr),
             Format::Json => self.print_json(&out, stdout),
@@ -253,7 +277,7 @@ impl Printer {
         let mut labelled: Option<Vec<&str>> = None;
         for r in &out.rows {
             if !self.quiet {
-                let names: Vec<&str> = r.0.iter().map(|(k, _)| *k).collect();
+                let names: Vec<&str> = r.0.iter().map(|(k, _)| k.as_ref()).collect();
                 if labelled.as_deref() != Some(names.as_slice()) {
                     let _ = writeln!(stderr, "# {}", names.join("\t"));
                     labelled = Some(names);
@@ -337,7 +361,8 @@ fn unmatched_fields(rows: &[Row], fields: &[String]) -> Option<String> {
     if rows.is_empty() || fields.iter().all(|f| f.starts_with('-')) {
         return None;
     }
-    let mut available: Vec<&str> = rows.iter().flat_map(|r| r.0.iter().map(|(k, _)| *k)).collect();
+    let mut available: Vec<&str> =
+        rows.iter().flat_map(|r| r.0.iter().map(|(k, _)| k.as_ref())).collect();
     available.sort_unstable();
     available.dedup();
 
