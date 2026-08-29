@@ -7,8 +7,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/arslan-gg/amcli/actions/workflows/ci.yml"><img src="https://github.com/arslan-gg/amcli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://github.com/arslan-gg/amcli/releases/latest"><img src="https://img.shields.io/github/v/release/arslan-gg/amcli?label=release" alt="Latest release"></a>
+  <a href="https://github.com/arslanr-com/amcli/actions/workflows/ci.yml"><img src="https://github.com/arslanr-com/amcli/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/arslanr-com/amcli/releases/latest"><img src="https://img.shields.io/github/v/release/arslanr-com/amcli?label=release" alt="Latest release"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache-2.0"></a>
   <a href="https://agentskills.io"><img src="https://img.shields.io/badge/agent%20skill-included-8A2BE2" alt="Agent skill included"></a>
 </p>
@@ -107,7 +107,7 @@ http://127.0.0.1:52341/
 **For an agent** — the skill installs and updates the binary itself:
 
 ```bash
-npx skills add arslan-gg/amcli
+npx skills add arslanr-com/amcli
 ```
 
 **Just the binary** — checked against the release's SHA256SUMS before it is
@@ -115,18 +115,18 @@ unpacked, with no flag that skips that, into `~/.local/bin`, no `sudo`, no
 shell config edited:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/arslan-gg/amcli/main/skills/amcli/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/arslanr-com/amcli/main/skills/amcli/scripts/install.sh | sh
 ```
 
 ```powershell
-irm https://raw.githubusercontent.com/arslan-gg/amcli/main/skills/amcli/scripts/install.ps1 | iex
+irm https://raw.githubusercontent.com/arslanr-com/amcli/main/skills/amcli/scripts/install.ps1 | iex
 ```
 
 **From source** (Rust 1.90+; the only route for platforms without a prebuilt
 binary — the installers fall back to it on their own):
 
 ```bash
-cargo install --git https://github.com/arslan-gg/amcli --locked amcli-cli
+cargo install --git https://github.com/arslanr-com/amcli --locked amcli-cli
 ```
 
 Add `--tag vX.Y.Z` to build a release rather than the branch, which is what

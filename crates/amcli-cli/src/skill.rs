@@ -1,6 +1,6 @@
 //! Installing the agent skill.
 //!
-//! `npx skills add arslan-gg/amcli` is the primary route and copies
+//! `npx skills add arslanr-com/amcli` is the primary route and copies
 //! `skills/amcli/` out of the repository verbatim. This command is the reverse
 //! route, for someone who got the binary first. Both must produce the *same*
 //! bytes, so the embedded copy is taken from that same directory and nothing

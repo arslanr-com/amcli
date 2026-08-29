@@ -39,7 +39,7 @@ try {
         [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch {}
 
-$Repo = 'arslan-gg/amcli'
+$Repo = 'arslanr-com/amcli'
 $Base = "https://github.com/$Repo"
 
 function Say([string]$m) { [Console]::Error.WriteLine($m) }

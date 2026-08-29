@@ -21,7 +21,7 @@ compatibility: >-
   model file. The one optional server is `amcli web`, a local read-only
   viewer that runs only while asked to and stops with Ctrl-C.
 metadata:
-  homepage: https://github.com/arslan-gg/amcli
+  homepage: https://github.com/arslanr-com/amcli
   binary: amcli
   spec: ArchiMate 3.2
 ---
