@@ -27,7 +27,7 @@ touches the document must preserve that property.
 
 ## `skills/amcli/` is shipped, not documentation
 
-`npx skills add arslan-gg/amcli` copies that directory out of the default
+`npx skills add arslanr-com/amcli` copies that directory out of the default
 branch verbatim, and `crates/amcli-cli/src/skill.rs` embeds the same files with
 `include_str!` for the binary-first route. **Both routes must produce identical
 bytes** — `both_install_routes_ship_the_same_bytes` walks the directory and

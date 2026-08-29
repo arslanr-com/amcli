@@ -25,7 +25,7 @@
 #
 # What it trusts, this being a script that downloads a binary and runs it:
 #
-#   - One host, written into the script: https://github.com/arslan-gg/amcli.
+#   - One host, written into the script: https://github.com/arslanr-com/amcli.
 #     No variable can point it elsewhere. AMCLI_VERSION selects a tag and is
 #     checked to be one, so it cannot climb out of the URL path.
 #   - HTTPS for every request, redirects included.
@@ -41,7 +41,7 @@
 
 set -eu
 
-REPO=arslan-gg/amcli
+REPO=arslanr-com/amcli
 BASE=https://github.com/$REPO
 DIR=${AMCLI_INSTALL_DIR:-${HOME:-.}/.local/bin}
 
