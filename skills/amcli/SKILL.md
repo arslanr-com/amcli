@@ -70,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.13.0**. The installer always gives you the
+This skill is written for **amcli 0.14.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
