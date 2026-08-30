@@ -1,7 +1,9 @@
 //! `amcli web` — the model in a browser, read-only.
 //!
-//! Binds the loopback interface on a free port, prints the URL, opens the
-//! browser unless told not to, and serves until interrupted. Nothing here
+//! Binds the loopback interface on a free port — `--bind` widens that for a
+//! container, and `--allow-host` names who may then ask — prints the URL,
+//! opens the browser unless told not to, and serves until interrupted.
+//! Nothing here
 //! writes: the page has no verb but GET, and the process holds the file open
 //! only long enough to read it, so an agent may keep editing the model with
 //! amcli while a person watches it change.
@@ -28,20 +30,26 @@ pub fn run(
     model: Model,
     path: PathBuf,
     port: Option<u16>,
+    bind: &str,
+    allow_host: &[String],
     no_open: bool,
 ) -> Result<Output, CliError> {
-    let listener = TcpListener::bind(("127.0.0.1", port.unwrap_or(0))).map_err(|e| {
-        CliError::new(
-            Code::Io,
-            "io",
-            format!("cannot listen on 127.0.0.1:{}: {e}", port.unwrap_or(0)),
-        )
-        .hint("pass another --port, or none to let the OS pick a free one")
+    let listener = TcpListener::bind((bind, port.unwrap_or(0))).map_err(|e| {
+        CliError::new(Code::Io, "io", format!("cannot listen on {bind}:{}: {e}", port.unwrap_or(0)))
+            .hint("pass another --port, or none to let the OS pick a free one")
     })?;
     let port = listener.local_addr().map(|a| a.port()).unwrap_or(0);
-    let url = format!("http://127.0.0.1:{port}/");
+    // A wildcard is an interface, not an address a browser can be handed, so
+    // the URL names the loopback that wildcard also covers.
+    let host = match bind {
+        "0.0.0.0" => "127.0.0.1",
+        "::" | "[::]" => "[::1]",
+        other => other,
+    };
+    let url = format!("http://{host}:{port}/");
 
-    let state = Arc::new(state::State::new(model, path.clone(), port));
+    let allowed: Vec<String> = allow_host.iter().map(|h| h.trim().to_ascii_lowercase()).collect();
+    let state = Arc::new(state::State::new(model, path.clone(), port, allowed));
     let name = state.current().model.name();
 
     let out = Output::one(Row::new().s("url", url.clone()).s("model", path.display().to_string()))
@@ -104,7 +112,7 @@ mod tests {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         let model = amcli_model::Model::open(&path).unwrap();
-        let state = Arc::new(State::new(model, path, port));
+        let state = Arc::new(State::new(model, path, port, Vec::new()));
         let served = Arc::clone(&state);
         std::thread::spawn(move || super::http::serve(listener, served));
         (port, state, dir)

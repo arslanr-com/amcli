@@ -32,6 +32,9 @@ type Stamp = (Option<SystemTime>, u64);
 pub struct State {
     pub path: PathBuf,
     pub port: u16,
+    /// Host headers accepted besides the loopback ones, already lower-cased.
+    /// Empty unless `--allow-host` named a reverse proxy's name.
+    pub allow_hosts: Vec<String>,
     snap: RwLock<Arc<Snapshot>>,
     gate: Mutex<Gate>,
 }
@@ -48,12 +51,13 @@ struct Gate {
 const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
 
 impl State {
-    pub fn new(model: Model, path: PathBuf, port: u16) -> State {
+    pub fn new(model: Model, path: PathBuf, port: u16, allow_hosts: Vec<String>) -> State {
         let stamp = stamp(&path);
         let snap = Snapshot::build(model, stamp);
         State {
             path,
             port,
+            allow_hosts,
             snap: RwLock::new(Arc::new(snap)),
             gate: Mutex::new(Gate { last_check: Instant::now(), failed: None, last_error: None }),
         }

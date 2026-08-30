@@ -228,8 +228,27 @@ enum Command {
     /// and a graph. Read-only; the page follows the file as it changes.
     Web {
         /// Port to listen on. Defaults to a free one chosen by the OS.
-        #[arg(long)]
+        /// Also read from $AMCLI_WEB_PORT.
+        #[arg(long, env = "AMCLI_WEB_PORT")]
         port: Option<u16>,
+        /// Interface to listen on. Loopback by default; a container that has
+        /// to be reached from outside needs 0.0.0.0. Also read from
+        /// $AMCLI_WEB_BIND.
+        #[arg(long, env = "AMCLI_WEB_BIND", default_value = "127.0.0.1", value_name = "ADDR")]
+        bind: String,
+        /// Host headers to serve besides localhost, comma-separated — the
+        /// name a reverse proxy puts in front of the viewer. Without it a
+        /// request for any other name is refused, which is what keeps a page
+        /// on another origin from reading the model. Also read from
+        /// $AMCLI_WEB_ALLOW_HOST.
+        #[arg(
+            long,
+            env = "AMCLI_WEB_ALLOW_HOST",
+            value_delimiter = ',',
+            value_name = "HOST",
+            num_args = 1..
+        )]
+        allow_host: Vec<String>,
         /// Print the URL and serve; do not open a browser.
         #[arg(long)]
         no_open: bool,
@@ -409,7 +428,9 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Validate { level, fix, strict } => {
             return read::validate(&mut model, level, *fix, *strict, &write_opts(cli));
         }
-        Command::Web { port, no_open } => return web::run(model, path, *port, *no_open),
+        Command::Web { port, bind, allow_host, no_open } => {
+            return web::run(model, path, *port, bind, allow_host, *no_open);
+        }
         _ => {}
     }
 

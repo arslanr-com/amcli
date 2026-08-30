@@ -119,11 +119,11 @@ fn handle(mut stream: TcpStream, state: &State) {
                     let mut r = Response::error(405, "only GET and HEAD are served");
                     r.extra.push("Allow: GET, HEAD".to_string());
                     r
-                } else if !host_is_local(&req.host, state.port) {
+                } else if !host_allowed(&req.host, state.port, &state.allow_hosts) {
                     // A page on some other origin that resolved a name to
                     // 127.0.0.1 could otherwise read the model through the
                     // visitor's browser.
-                    Response::error(403, "this page is served to localhost only")
+                    Response::error(403, "this page is served to localhost and --allow-host names")
                 } else {
                     let mut r = super::api::route(&req, state);
                     if req.method == "HEAD" {
@@ -221,6 +221,34 @@ fn host_is_local(host: &str, port: u16) -> bool {
     matches!(bare, "127.0.0.1" | "localhost" | "[::1]")
 }
 
+/// The loopback names, plus whatever `--allow-host` added.
+///
+/// A reverse proxy passes the name the reader typed, which is neither
+/// loopback nor on the port we bound, so a deployment has to say that name
+/// out loud. Naming it is the whole check: an origin that is not on the list
+/// is still refused, so the rebinding defence survives the container.
+fn host_allowed(host: &str, port: u16, allowed: &[String]) -> bool {
+    if host_is_local(host, port) {
+        return true;
+    }
+    let bare = strip_port(host);
+    allowed.iter().any(|a| a == "*" || a == host || a == bare)
+}
+
+/// `example.test:8080` → `example.test`, leaving an IPv6 literal alone: its
+/// colons are the address, and its port would be outside the brackets.
+fn strip_port(host: &str) -> &str {
+    let at = match host.rfind(']') {
+        Some(b) => host[b..].find(':').map(|i| b + i),
+        None if host.matches(':').count() == 1 => host.find(':'),
+        None => None,
+    };
+    match at {
+        Some(i) if host[i + 1..].bytes().all(|b| b.is_ascii_digit()) => &host[..i],
+        _ => host,
+    }
+}
+
 fn write_response(stream: &mut TcpStream, r: &Response, head_only: bool) {
     let mut head = format!(
         "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\
@@ -295,6 +323,29 @@ mod tests {
         assert!(host_is_local("", 5000));
         assert!(!host_is_local("evil.example:5000", 5000));
         assert!(!host_is_local("127.0.0.1:5001", 5000));
+    }
+
+    /// Behind a proxy the Host is the name the reader typed, on the proxy's
+    /// port rather than ours. Only the names that were asked for get in.
+    #[test]
+    fn an_allowed_host_gets_in_and_nothing_else_does() {
+        let allowed = ["amcli.example.test".to_string()];
+        assert!(host_allowed("amcli.example.test", 3000, &allowed));
+        assert!(host_allowed("amcli.example.test:443", 3000, &allowed));
+        assert!(host_allowed("localhost:3000", 3000, &allowed), "the healthcheck still passes");
+        assert!(!host_allowed("evil.example", 3000, &allowed));
+        assert!(!host_allowed("amcli.example.test.evil", 3000, &allowed));
+        // Nothing named, nothing but loopback: the default is unchanged.
+        assert!(!host_allowed("amcli.example.test", 3000, &[]));
+    }
+
+    #[test]
+    fn a_port_comes_off_a_name_but_never_off_an_address() {
+        assert_eq!(strip_port("amcli.example.test:8080"), "amcli.example.test");
+        assert_eq!(strip_port("amcli.example.test"), "amcli.example.test");
+        assert_eq!(strip_port("[::1]:8080"), "[::1]");
+        assert_eq!(strip_port("[fe80::1]"), "[fe80::1]");
+        assert_eq!(strip_port("host:notaport"), "host:notaport");
     }
 
     #[test]

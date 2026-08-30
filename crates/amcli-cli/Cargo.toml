@@ -18,7 +18,7 @@ amcli-validate.workspace = true
 amcli-view.workspace = true
 amcli-render.workspace = true
 amcli-xml.workspace = true
-clap = { version = "4", features = ["derive", "wrap_help"] }
+clap = { version = "4", features = ["derive", "env", "wrap_help"] }
 # Only for parsing batch input. Output shapes are fixed and written by hand;
 # hand-rolling a parser for arbitrary caller JSON would be a liability.
 serde = { version = "1", features = ["derive"] }

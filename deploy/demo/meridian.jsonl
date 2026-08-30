@@ -1,0 +1,288 @@
+# Meridian Insurance — a fictional model, written to be *looked at*.
+#
+# It exists so the container has something worth serving: enough elements,
+# relationships and layers that every page of `amcli web` has real content —
+# the folder tree, the element and relationship tables, the graph, and views
+# drawn by the same layout `view auto` runs.
+#
+# Everything here is invented. There is nothing in it to keep secret.
+#
+# Re-runnable: every line is `if_absent`, and the build script pins
+# AMCLI_ID_SEED, so rebuilding the model produces the same bytes.
+
+## ---- Motivation ------------------------------------------------------------
+{"op":"element.add","type":"Stakeholder","name":"Chief Executive","ref":"st-ceo","if_absent":true,"doc":"Answers to the board for growth and for the loss ratio."}
+{"op":"element.add","type":"Stakeholder","name":"Chief Risk Officer","ref":"st-cro","if_absent":true}
+{"op":"element.add","type":"Stakeholder","name":"Policyholder","ref":"st-holder","if_absent":true,"doc":"The person the whole model is ultimately for."}
+{"op":"element.add","type":"Stakeholder","name":"Regulator","ref":"st-reg","if_absent":true}
+{"op":"element.add","type":"Driver","name":"Claims cost","ref":"dr-cost","if_absent":true,"doc":"Claims settlement is the largest line of spend."}
+{"op":"element.add","type":"Driver","name":"Customer retention","ref":"dr-ret","if_absent":true}
+{"op":"element.add","type":"Driver","name":"Regulatory pressure","ref":"dr-reg","if_absent":true}
+{"op":"element.add","type":"Assessment","name":"Claims take nine days on average","ref":"as-nine","if_absent":true,"doc":"Measured over the last four quarters; the market median is four."}
+{"op":"element.add","type":"Assessment","name":"Quotes abandoned at the payment step","ref":"as-abandon","if_absent":true}
+{"op":"element.add","type":"Goal","name":"Settle a motor claim in 48 hours","ref":"go-48","if_absent":true}
+{"op":"element.add","type":"Goal","name":"Renew nine policies in ten","ref":"go-renew","if_absent":true}
+{"op":"element.add","type":"Goal","name":"Report solvency on time, every time","ref":"go-solv","if_absent":true}
+{"op":"element.add","type":"Outcome","name":"Straight-through claims at 60%","ref":"oc-stp","if_absent":true}
+{"op":"element.add","type":"Principle","name":"One record of a customer","ref":"pr-single","if_absent":true,"doc":"A customer's details are mastered once and read everywhere else."}
+{"op":"element.add","type":"Principle","name":"Every decision is explainable","ref":"pr-explain","if_absent":true}
+{"op":"element.add","type":"Requirement","name":"Fraud score returned within 300ms","ref":"rq-fraud","if_absent":true}
+{"op":"element.add","type":"Requirement","name":"Quote in under two minutes","ref":"rq-quote","if_absent":true}
+{"op":"element.add","type":"Requirement","name":"Audit trail on every payment","ref":"rq-audit","if_absent":true}
+{"op":"element.add","type":"Constraint","name":"Personal data stays in region","ref":"cn-region","if_absent":true}
+
+{"op":"relation.add","type":"Association","source":"ref:st-ceo","target":"ref:dr-ret","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:st-cro","target":"ref:dr-cost","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:st-reg","target":"ref:dr-reg","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:st-holder","target":"ref:dr-ret","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:as-nine","target":"ref:dr-cost","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:as-abandon","target":"ref:dr-ret","if_absent":true}
+{"op":"relation.add","type":"Influence","source":"ref:dr-cost","target":"ref:go-48","if_absent":true}
+{"op":"relation.add","type":"Influence","source":"ref:dr-ret","target":"ref:go-renew","if_absent":true}
+{"op":"relation.add","type":"Influence","source":"ref:dr-reg","target":"ref:go-solv","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:oc-stp","target":"ref:go-48","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:rq-fraud","target":"ref:go-48","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:rq-quote","target":"ref:go-renew","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:rq-audit","target":"ref:go-solv","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:rq-audit","target":"ref:pr-explain","if_absent":true}
+{"op":"relation.add","type":"Influence","source":"ref:cn-region","target":"ref:go-solv","if_absent":true}
+
+## ---- Strategy --------------------------------------------------------------
+{"op":"element.add","type":"Capability","name":"Underwriting","ref":"cap-uw","if_absent":true}
+{"op":"element.add","type":"Capability","name":"Claims handling","ref":"cap-claims","if_absent":true}
+{"op":"element.add","type":"Capability","name":"Customer engagement","ref":"cap-cust","if_absent":true}
+{"op":"element.add","type":"Capability","name":"Risk and compliance","ref":"cap-risk","if_absent":true}
+{"op":"element.add","type":"Resource","name":"Actuarial team","ref":"res-act","if_absent":true}
+{"op":"element.add","type":"Resource","name":"Claims adjuster network","ref":"res-adj","if_absent":true}
+{"op":"element.add","type":"CourseOfAction","name":"Automate the simple claim","ref":"coa-auto","if_absent":true,"doc":"Windscreen and low-value motor claims, settled without a human."}
+{"op":"element.add","type":"ValueStream","name":"Cover me","ref":"vs-cover","if_absent":true}
+{"op":"element.add","type":"ValueStream","name":"Put me right","ref":"vs-right","if_absent":true}
+
+{"op":"relation.add","type":"Assignment","source":"ref:res-act","target":"ref:cap-uw","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:res-adj","target":"ref:cap-claims","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:coa-auto","target":"ref:go-48","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:coa-auto","target":"ref:cap-claims","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:cap-uw","target":"ref:vs-cover","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:cap-claims","target":"ref:vs-right","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:cap-cust","target":"ref:vs-cover","if_absent":true}
+
+## ---- Business --------------------------------------------------------------
+{"op":"element.add","type":"BusinessActor","name":"Meridian Insurance","ref":"ba-meridian","if_absent":true}
+{"op":"element.add","type":"BusinessActor","name":"Customer","ref":"ba-customer","if_absent":true}
+{"op":"element.add","type":"BusinessActor","name":"Broker","ref":"ba-broker","if_absent":true}
+{"op":"element.add","type":"BusinessActor","name":"Repair Garage","ref":"ba-garage","if_absent":true}
+{"op":"element.add","type":"BusinessRole","name":"Underwriter","ref":"br-uw","if_absent":true}
+{"op":"element.add","type":"BusinessRole","name":"Claims Handler","ref":"br-handler","if_absent":true}
+{"op":"element.add","type":"BusinessRole","name":"Fraud Investigator","ref":"br-fraud","if_absent":true}
+{"op":"element.add","type":"BusinessRole","name":"Service Agent","ref":"br-agent","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Handle Claim","ref":"bp-claim","if_absent":true,"doc":"From first notice of loss to settlement or refusal.","props":{"owner":"claims","sla":"48h"}}
+{"op":"element.add","type":"BusinessProcess","name":"Register Loss","ref":"bp-fnol","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Assess Damage","ref":"bp-assess","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Check for Fraud","ref":"bp-fraud","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Settle Claim","ref":"bp-settle","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Quote Policy","ref":"bp-quote","if_absent":true,"props":{"owner":"distribution"}}
+{"op":"element.add","type":"BusinessProcess","name":"Issue Policy","ref":"bp-issue","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Renew Policy","ref":"bp-renew","if_absent":true}
+{"op":"element.add","type":"BusinessProcess","name":"Collect Premium","ref":"bp-premium","if_absent":true}
+{"op":"element.add","type":"BusinessFunction","name":"Pricing","ref":"bf-pricing","if_absent":true}
+{"op":"element.add","type":"BusinessFunction","name":"Regulatory Reporting","ref":"bf-report","if_absent":true}
+{"op":"element.add","type":"BusinessEvent","name":"Loss reported","ref":"be-loss","if_absent":true}
+{"op":"element.add","type":"BusinessEvent","name":"Renewal due","ref":"be-renewal","if_absent":true}
+{"op":"element.add","type":"BusinessService","name":"Claims Service","ref":"bs-claims","if_absent":true}
+{"op":"element.add","type":"BusinessService","name":"Policy Service","ref":"bs-policy","if_absent":true}
+{"op":"element.add","type":"BusinessService","name":"Customer Self-Service","ref":"bs-self","if_absent":true}
+{"op":"element.add","type":"BusinessObject","name":"Policy","ref":"bo-policy","if_absent":true}
+{"op":"element.add","type":"BusinessObject","name":"Claim","ref":"bo-claim","if_absent":true}
+{"op":"element.add","type":"BusinessObject","name":"Customer Record","ref":"bo-customer","if_absent":true}
+{"op":"element.add","type":"BusinessObject","name":"Premium Invoice","ref":"bo-invoice","if_absent":true}
+{"op":"element.add","type":"Contract","name":"Motor Cover Terms","ref":"co-motor","if_absent":true}
+{"op":"element.add","type":"Product","name":"Motor Insurance","ref":"pd-motor","if_absent":true}
+{"op":"element.add","type":"Product","name":"Home Insurance","ref":"pd-home","if_absent":true}
+
+{"op":"relation.add","type":"Assignment","source":"ref:ba-meridian","target":"ref:br-uw","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ba-meridian","target":"ref:br-handler","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ba-meridian","target":"ref:br-fraud","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ba-meridian","target":"ref:br-agent","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ba-broker","target":"ref:br-uw","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:bp-claim","target":"ref:bp-fnol","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:bp-claim","target":"ref:bp-assess","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:bp-claim","target":"ref:bp-fraud","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:bp-claim","target":"ref:bp-settle","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:be-loss","target":"ref:bp-fnol","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-fnol","target":"ref:bp-assess","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-assess","target":"ref:bp-fraud","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-fraud","target":"ref:bp-settle","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:be-renewal","target":"ref:bp-renew","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-quote","target":"ref:bp-issue","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-issue","target":"ref:bp-premium","if_absent":true}
+{"op":"relation.add","type":"Triggering","source":"ref:bp-renew","target":"ref:bp-premium","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-handler","target":"ref:bp-fnol","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-handler","target":"ref:bp-settle","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-fraud","target":"ref:bp-fraud","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-uw","target":"ref:bp-quote","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-uw","target":"ref:bp-issue","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-agent","target":"ref:bp-renew","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ba-garage","target":"ref:bp-assess","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:br-uw","target":"ref:bf-pricing","if_absent":true}
+{"op":"relation.add","type":"Access","source":"ref:bp-fnol","target":"ref:bo-claim","if_absent":true,"access":"write"}
+{"op":"relation.add","type":"Access","source":"ref:bp-assess","target":"ref:bo-claim","if_absent":true,"access":"rw"}
+{"op":"relation.add","type":"Access","source":"ref:bp-settle","target":"ref:bo-claim","if_absent":true,"access":"rw"}
+{"op":"relation.add","type":"Access","source":"ref:bp-issue","target":"ref:bo-policy","if_absent":true,"access":"write"}
+{"op":"relation.add","type":"Access","source":"ref:bp-renew","target":"ref:bo-policy","if_absent":true,"access":"rw"}
+{"op":"relation.add","type":"Access","source":"ref:bp-quote","target":"ref:bo-customer","if_absent":true,"access":"read"}
+{"op":"relation.add","type":"Access","source":"ref:bp-premium","target":"ref:bo-invoice","if_absent":true,"access":"write"}
+{"op":"relation.add","type":"Access","source":"ref:bf-report","target":"ref:bo-policy","if_absent":true,"access":"read"}
+{"op":"relation.add","type":"Realization","source":"ref:bp-claim","target":"ref:bs-claims","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bp-issue","target":"ref:bs-policy","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bp-renew","target":"ref:bs-policy","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:bs-claims","target":"ref:ba-customer","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:bs-policy","target":"ref:ba-customer","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:bs-policy","target":"ref:ba-broker","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:bs-self","target":"ref:ba-customer","if_absent":true}
+{"op":"relation.add","type":"Aggregation","source":"ref:pd-motor","target":"ref:bs-policy","if_absent":true}
+{"op":"relation.add","type":"Aggregation","source":"ref:pd-motor","target":"ref:bs-claims","if_absent":true}
+{"op":"relation.add","type":"Aggregation","source":"ref:pd-motor","target":"ref:co-motor","if_absent":true}
+{"op":"relation.add","type":"Aggregation","source":"ref:pd-home","target":"ref:bs-policy","if_absent":true}
+{"op":"relation.add","type":"Specialization","source":"ref:co-motor","target":"ref:bo-policy","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bp-claim","target":"ref:cap-claims","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bp-quote","target":"ref:cap-uw","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bs-self","target":"ref:cap-cust","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:bf-report","target":"ref:cap-risk","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:st-holder","target":"ref:ba-customer","if_absent":true}
+
+## ---- Application -----------------------------------------------------------
+{"op":"element.add","type":"ApplicationComponent","name":"Policy Administration","ref":"ac-pas","if_absent":true,"doc":"The book of record for every policy in force.","props":{"vendor":"in-house","criticality":"tier-1"}}
+{"op":"element.add","type":"ApplicationComponent","name":"Claims Platform","ref":"ac-claims","if_absent":true,"props":{"criticality":"tier-1"}}
+{"op":"element.add","type":"ApplicationComponent","name":"Rating Engine","ref":"ac-rating","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Fraud Detection","ref":"ac-fraud","if_absent":true,"props":{"criticality":"tier-2"}}
+{"op":"element.add","type":"ApplicationComponent","name":"Customer Portal","ref":"ac-portal","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Broker Gateway","ref":"ac-broker","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Payments Hub","ref":"ac-pay","if_absent":true,"props":{"criticality":"tier-1"}}
+{"op":"element.add","type":"ApplicationComponent","name":"Document Store","ref":"ac-docs","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Customer Master","ref":"ac-mdm","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Reporting Warehouse","ref":"ac-dwh","if_absent":true}
+{"op":"element.add","type":"ApplicationComponent","name":"Notification Service","ref":"ac-notify","if_absent":true}
+{"op":"element.add","type":"ApplicationFunction","name":"Price a Risk","ref":"af-price","if_absent":true}
+{"op":"element.add","type":"ApplicationFunction","name":"Score a Claim","ref":"af-score","if_absent":true}
+{"op":"element.add","type":"ApplicationFunction","name":"Reconcile Payments","ref":"af-recon","if_absent":true}
+{"op":"element.add","type":"ApplicationService","name":"Quotation API","ref":"as-quote","if_absent":true}
+{"op":"element.add","type":"ApplicationService","name":"Policy API","ref":"as-policy","if_absent":true}
+{"op":"element.add","type":"ApplicationService","name":"Claims API","ref":"as-claims","if_absent":true}
+{"op":"element.add","type":"ApplicationService","name":"Fraud Score API","ref":"as-fraud","if_absent":true,"doc":"Returns a 0-100 score and the three features that moved it."}
+{"op":"element.add","type":"ApplicationService","name":"Payment API","ref":"as-pay","if_absent":true}
+{"op":"element.add","type":"ApplicationService","name":"Customer Lookup API","ref":"as-lookup","if_absent":true}
+{"op":"element.add","type":"ApplicationInterface","name":"Broker SOAP endpoint","ref":"ai-soap","if_absent":true}
+{"op":"element.add","type":"DataObject","name":"Policy Record","ref":"do-policy","if_absent":true}
+{"op":"element.add","type":"DataObject","name":"Claim File","ref":"do-claim","if_absent":true}
+{"op":"element.add","type":"DataObject","name":"Customer Profile","ref":"do-customer","if_absent":true}
+{"op":"element.add","type":"DataObject","name":"Payment Ledger","ref":"do-ledger","if_absent":true}
+{"op":"element.add","type":"DataObject","name":"Rating Table","ref":"do-rating","if_absent":true}
+
+{"op":"relation.add","type":"Assignment","source":"ref:ac-rating","target":"ref:af-price","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ac-fraud","target":"ref:af-score","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:ac-pay","target":"ref:af-recon","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:af-price","target":"ref:as-quote","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:af-score","target":"ref:as-fraud","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-pas","target":"ref:as-policy","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-claims","target":"ref:as-claims","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-pay","target":"ref:as-pay","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-mdm","target":"ref:as-lookup","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:ac-broker","target":"ref:ai-soap","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-quote","target":"ref:bp-quote","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-policy","target":"ref:bp-issue","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-policy","target":"ref:bp-renew","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-claims","target":"ref:bp-fnol","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-claims","target":"ref:bp-settle","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-fraud","target":"ref:bp-fraud","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-pay","target":"ref:bp-premium","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-lookup","target":"ref:bp-quote","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-quote","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-quote","target":"ref:ac-broker","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-policy","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-claims","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-fraud","target":"ref:ac-claims","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-lookup","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:as-pay","target":"ref:ac-pas","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ac-docs","target":"ref:ac-claims","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ac-notify","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Flow","source":"ref:ac-pas","target":"ref:ac-dwh","if_absent":true}
+{"op":"relation.add","type":"Flow","source":"ref:ac-claims","target":"ref:ac-dwh","if_absent":true}
+{"op":"relation.add","type":"Flow","source":"ref:ac-pay","target":"ref:ac-dwh","if_absent":true}
+{"op":"relation.add","type":"Access","source":"ref:af-price","target":"ref:do-rating","if_absent":true,"access":"read"}
+{"op":"relation.add","type":"Access","source":"ref:af-score","target":"ref:do-claim","if_absent":true,"access":"read"}
+{"op":"relation.add","type":"Access","source":"ref:af-recon","target":"ref:do-ledger","if_absent":true,"access":"rw"}
+{"op":"relation.add","type":"Association","source":"ref:ac-pas","target":"ref:do-policy","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:ac-claims","target":"ref:do-claim","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:ac-mdm","target":"ref:do-customer","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:ac-pay","target":"ref:do-ledger","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:ac-rating","target":"ref:do-rating","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:do-policy","target":"ref:bo-policy","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:do-claim","target":"ref:bo-claim","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:do-customer","target":"ref:bo-customer","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:do-ledger","target":"ref:bo-invoice","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-portal","target":"ref:bs-self","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-mdm","target":"ref:pr-single","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-fraud","target":"ref:rq-fraud","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-rating","target":"ref:rq-quote","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ac-pay","target":"ref:rq-audit","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ac-dwh","target":"ref:bf-report","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ac-rating","target":"ref:bf-pricing","if_absent":true}
+
+## ---- Technology ------------------------------------------------------------
+{"op":"element.add","type":"Node","name":"Primary Data Centre","ref":"nd-dc","if_absent":true}
+{"op":"element.add","type":"Node","name":"Kubernetes Cluster","ref":"nd-k8s","if_absent":true}
+{"op":"element.add","type":"Node","name":"Mainframe","ref":"nd-mf","if_absent":true,"doc":"Still holds the policy book of record."}
+{"op":"element.add","type":"Node","name":"Database Cluster","ref":"nd-db","if_absent":true}
+{"op":"element.add","type":"Device","name":"Load Balancer","ref":"dv-lb","if_absent":true}
+{"op":"element.add","type":"SystemSoftware","name":"PostgreSQL","ref":"ss-pg","if_absent":true}
+{"op":"element.add","type":"SystemSoftware","name":"Message Broker","ref":"ss-mq","if_absent":true}
+{"op":"element.add","type":"SystemSoftware","name":"Identity Provider","ref":"ss-idp","if_absent":true}
+{"op":"element.add","type":"TechnologyService","name":"Container Hosting","ref":"ts-host","if_absent":true}
+{"op":"element.add","type":"TechnologyService","name":"Relational Storage","ref":"ts-store","if_absent":true}
+{"op":"element.add","type":"TechnologyService","name":"Event Streaming","ref":"ts-stream","if_absent":true}
+{"op":"element.add","type":"TechnologyService","name":"Single Sign-On","ref":"ts-sso","if_absent":true}
+{"op":"element.add","type":"CommunicationNetwork","name":"Corporate WAN","ref":"cn-wan","if_absent":true}
+{"op":"element.add","type":"Artifact","name":"claims-platform.jar","ref":"ar-claims","if_absent":true}
+{"op":"element.add","type":"Artifact","name":"rating-engine.jar","ref":"ar-rating","if_absent":true}
+{"op":"element.add","type":"Artifact","name":"portal-bundle.tgz","ref":"ar-portal","if_absent":true}
+
+{"op":"relation.add","type":"Composition","source":"ref:nd-dc","target":"ref:nd-k8s","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:nd-dc","target":"ref:nd-mf","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:nd-dc","target":"ref:nd-db","if_absent":true}
+{"op":"relation.add","type":"Composition","source":"ref:nd-dc","target":"ref:dv-lb","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:nd-db","target":"ref:ss-pg","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:nd-k8s","target":"ref:ss-mq","if_absent":true}
+{"op":"relation.add","type":"Assignment","source":"ref:nd-k8s","target":"ref:ss-idp","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:nd-k8s","target":"ref:ts-host","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ss-pg","target":"ref:ts-store","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ss-mq","target":"ref:ts-stream","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ss-idp","target":"ref:ts-sso","if_absent":true}
+{"op":"relation.add","type":"Association","source":"ref:cn-wan","target":"ref:nd-dc","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-host","target":"ref:ac-claims","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-host","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-host","target":"ref:ac-rating","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-host","target":"ref:ac-fraud","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-store","target":"ref:ac-pas","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-store","target":"ref:ac-mdm","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-stream","target":"ref:ac-dwh","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-stream","target":"ref:ac-notify","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-sso","target":"ref:ac-portal","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:ts-sso","target":"ref:ac-broker","if_absent":true}
+{"op":"relation.add","type":"Serving","source":"ref:nd-mf","target":"ref:ac-pas","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ar-claims","target":"ref:ac-claims","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ar-rating","target":"ref:ac-rating","if_absent":true}
+{"op":"relation.add","type":"Realization","source":"ref:ar-portal","target":"ref:ac-portal","if_absent":true}
+
+## ---- Views -----------------------------------------------------------------
+# Laid out by the same `layout::place` the CLI runs, so what the page draws is
+# what `amcli view render` would file.
+{"op":"view.auto","name":"Claims end to end","from":"ref:bp-claim","depth":2,"direction":"both","viewpoint":"business_process_cooperation","replace":true}
+{"op":"view.auto","name":"Quote to policy","from":"ref:bp-quote","depth":2,"direction":"both","viewpoint":"business_process_cooperation","replace":true}
+{"op":"view.auto","name":"Application landscape","from":"ref:ac-pas","depth":2,"direction":"both","viewpoint":"application_cooperation","replace":true}
+{"op":"view.auto","name":"Fraud detection in context","from":"ref:ac-fraud","depth":2,"direction":"both","viewpoint":"application_usage","replace":true}
+{"op":"view.auto","name":"Payments chain","from":"ref:ac-pay","depth":2,"direction":"both","viewpoint":"application_usage","replace":true}
+{"op":"view.auto","name":"Technology platform","from":"ref:nd-dc","depth":3,"direction":"both","viewpoint":"technology","replace":true}
+{"op":"view.auto","name":"Customer portal stack","from":"ref:ac-portal","depth":2,"direction":"both","viewpoint":"layered","replace":true}
+{"op":"view.auto","name":"Goals and what meets them","from":"ref:go-48","depth":3,"direction":"both","viewpoint":"goal_realization","replace":true}
+{"op":"view.auto","name":"Capabilities","from":"ref:cap-claims","depth":2,"direction":"both","viewpoint":"capability","replace":true}
+{"op":"view.auto","name":"Motor Insurance as a product","from":"ref:pd-motor","depth":2,"direction":"both","viewpoint":"product","replace":true}
