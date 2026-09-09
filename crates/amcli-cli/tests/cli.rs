@@ -250,9 +250,11 @@ fn a_relationship_row_says_what_it_joins() {
     assert_eq!(row["target_name"], "BR1", "{out}");
     assert!(row["source"].as_str().unwrap().len() > 8, "an end is addressable: {out}");
 
-    // An element carries no ends, rather than two empty columns.
+    // An element carries no ends, rather than two empty columns. Its nested
+    // relations do — that is a different record shape, checked below.
     let (_, out, _) = m.run(&["get", "BA1", "-F", "json"]);
-    assert!(!out.contains("source_name"), "{out}");
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(v["data"][0].get("source_name").is_none(), "{out}");
 
     // `get` names the views once. It used to say `views` twice in one object —
     // the count and then the list — and a JSON reader keeps whichever it saw
@@ -1053,11 +1055,13 @@ fn the_view_field_reports_how_many_and_which() {
     assert_eq!(count(&["query", "name=Undrawn", "--fields", "name,views"]), "Undrawn\t0");
 
     // A field that does not exist projected to nothing and said nothing, so a
-    // near-miss spelling read as "this model has no view information".
-    let (_, out, err) = m.run(&["list", "-l", "1", "--fields", "name,view"]);
+    // near-miss spelling read as "this model has no view information". On a
+    // read it is a usage error now, before any row.
+    let (code, out, err) = m.run(&["list", "-l", "1", "--fields", "name,view"]);
+    assert_eq!(code, 2, "{err}");
     assert!(err.contains("no such field: view"), "{err}");
     assert!(err.contains("views"), "the real column is named: {err}");
-    assert!(!out.contains('\t'), "only the field that exists was printed: {out}");
+    assert!(out.is_empty(), "no row was printed under a wrong projection: {out}");
 
     // A name still filters by view, and the count column agrees with it.
     let (_, out, _) = m.run(&["query", "view~\"2 Test\"", "--fields", "name,views", "-q"]);
@@ -2275,4 +2279,413 @@ fn the_two_dark_palettes_are_one_palette() {
             .map(|l| l.split_whitespace().collect::<Vec<_>>().join(" "))
             .collect()
     }
+}
+
+/// A relationship added between two elements a view already shows reached no
+/// view, and nothing said so. The model then held a relationship drawn
+/// nowhere, `view layout --relayout-all` could not add what was never in the
+/// file, and the one way to draw it was to rebuild the view member by member
+/// — a three-line fix became a forty-line batch every time.
+#[test]
+fn a_new_relationship_is_drawn_where_both_ends_already_are() {
+    let m = Model::new("modelimporter_test.archimate");
+    for (ty, name) in [("BusinessActor", "A"), ("Node", "N"), ("BusinessRole", "R")] {
+        assert_eq!(m.run(&["element", "add", ty, name]).0, 0);
+    }
+    assert_eq!(m.run(&["view", "create", "V"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "W"]).0, 0);
+    for name in ["A", "N", "R"] {
+        assert_eq!(m.run(&["view", "add", "V", name]).0, 0);
+    }
+    assert_eq!(m.run(&["view", "add", "W", "A"]).0, 0);
+    let edges = |view: &str| -> usize {
+        let (_, out, _) = m.run(&["view", "render", view, "--as", "json", "-q"]);
+        out.matches(r#""relationship":"#).count()
+    };
+
+    // Both ends on V: drawn there, and the row and the note say so. Only one
+    // end on W: not drawn there.
+    let (code, out, err) = m.run(&["relation", "add", "Assignment", "A", "R"]);
+    assert_eq!(code, 0, "{err}");
+    let row = rows(&out).remove(0);
+    assert_eq!(row[4], "1", "the row counts the views it was drawn on: {out}");
+    assert!(err.contains("drawn on 1 view(s): V"), "{err}");
+    assert_eq!(edges("V"), 1);
+    assert_eq!(edges("W"), 0);
+    let (_, out, _) = m.run(&["query", "type=Assignment and name=''", "--fields", "views", "-q"]);
+    assert!(out.lines().all(|l| l.trim() == "1"), "the relationship is on one view: {out}");
+
+    // The same from a batch, and the opt-out on both.
+    let ops = m.dir.path().join("rels.jsonl");
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"relation.add","type":"Association","source":"A","target":"N"}"#,
+            "\n",
+            r#"{"op":"relation.add","type":"Association","source":"N","target":"R","no_draw":true}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let r = rows(&out);
+    assert_eq!(r[0][3], "1", "drawn: {out}");
+    assert_eq!(r[1][3], "0", "no_draw: {out}");
+    assert_eq!(edges("V"), 2);
+    let (_, _, err) = m.run(&["relation", "add", "Serving", "N", "A", "--no-draw"]);
+    assert!(!err.contains("drawn on"), "{err}");
+    assert_eq!(edges("V"), 2);
+
+    // Neither end drawn anywhere: silence, not a complaint about every write
+    // on a model without views.
+    assert_eq!(m.run(&["element", "add", "Goal", "Off"]).0, 0);
+    let (_, out, err) = m.run(&["relation", "add", "Association", "Off", "R"]);
+    assert!(err.contains("not drawn"), "one end is drawn, so it says why not: {err}");
+    let _ = out;
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// `view add` of an element already on the view put a second box for it on
+/// the drawing, exit 0, no note — so a batch that re-added a member to
+/// "refresh" it corrupted the view, and `validate` was content. A present
+/// member is left where it is; what it can newly draw is still drawn.
+#[test]
+fn adding_a_present_member_to_a_view_adds_nothing() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "ApplicationComponent", "Svc"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "V"]).0, 0);
+    let nodes = || -> usize {
+        let (_, out, _) = m.run(&["view", "render", "V", "--as", "json", "-q"]);
+        out.matches(r#""concept":"#).count()
+    };
+
+    assert_eq!(m.run(&["view", "add", "V", "Svc"]).0, 0);
+    let before = m.text();
+    let (code, out, err) = m.run(&["view", "add", "V", "Svc"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(nodes(), 1, "a second box was drawn for the same element");
+    let row = rows(&out).remove(0);
+    assert_eq!(row[5], "false", "the row says nothing was added: {out}");
+    assert!(err.contains("already on the view"), "{err}");
+    assert_eq!(m.text(), before, "a no-op writes the same bytes");
+
+    // Still wired: a relationship that reached the model without being drawn
+    // is drawn by re-adding either end.
+    assert_eq!(m.run(&["view", "add", "V", "BA1"]).0, 0);
+    assert_eq!(m.run(&["relation", "add", "Serving", "Svc", "BA1", "--no-draw"]).0, 0);
+    let (_, out, _) = m.run(&["view", "add", "V", "Svc", "-q"]);
+    assert_eq!(rows(&out)[0][4], "1", "the missing line was drawn: {out}");
+    assert_eq!(nodes(), 2);
+
+    // And in a batch, so a rebuild batch is re-runnable: the second run adds
+    // nothing and the file comes back byte-identical.
+    let ops = m.dir.path().join("again.jsonl");
+    std::fs::write(&ops, "{\"op\":\"view.add\",\"view\":\"V\",\"target\":\"Svc\"}\n").unwrap();
+    let before = m.text();
+    let (code, out, _) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0);
+    assert!(out.contains("false"), "reports the skip: {out}");
+    assert_eq!(m.text(), before);
+    assert_eq!(nodes(), 2);
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// `export views` wrote no `view.doc`, and `view.create` with `replace`
+/// wiped the old view's documentation and viewpoint — so the round trip
+/// SKILL.md called byte-identical deleted the documentation of every
+/// documented view it touched. Both halves: the export carries them, and a
+/// replace that names neither keeps them.
+#[test]
+fn exported_views_carry_documentation_and_a_replace_keeps_it() {
+    let m = Model::new("modelimporter_test.archimate");
+    let model_file = m.dir.path().join("m.archimate");
+    for stale in ["View 1", "View 2"] {
+        assert_eq!(m.run(&["view", "delete", stale, "-y"]).0, 0);
+    }
+    let seeded = |args: &[&str]| -> (i32, String, String) {
+        let mut all = args.to_vec();
+        all.extend_from_slice(&["--id-seed", "docs"]);
+        m.run(&all)
+    };
+    assert_eq!(seeded(&["view", "create", "V", "--viewpoint", "layered"]).0, 0);
+    assert_eq!(seeded(&["view", "add", "V", "BA1"]).0, 0);
+    assert_eq!(seeded(&["view", "add", "V", "BR1"]).0, 0);
+    assert_eq!(seeded(&["view", "doc", "V", "What V is for."]).0, 0);
+    // Laid out, as a view that is kept is: the export re-lays every view it
+    // rebuilds, so the round trip is exact only from a laid-out drawing.
+    assert_eq!(seeded(&["view", "layout", "V", "--relayout-all"]).0, 0);
+    let said = |m: &Model| -> String {
+        let (_, out, _) = m.run(&["view", "list", "--fields", "name,doc,viewpoint", "-q"]);
+        out.lines().find(|l| l.starts_with("V\t")).unwrap_or_default().to_string()
+    };
+    assert_eq!(said(&m), "V\tlayered\tWhat V is for.");
+
+    // Where Archi writes it: after the objects, before any property. Archi's
+    // next save would move a line written anywhere else.
+    let text = m.text();
+    let doc_at = text.find("<documentation>What V is for.").unwrap();
+    let last_child = text.rfind("<child ").unwrap();
+    assert!(doc_at > last_child, "documentation before the objects:\n{text}");
+
+    let spec = m.dir.path().join("views.jsonl");
+    assert_eq!(m.run(&["export", "views", "-o", spec.to_str().unwrap()]).0, 0);
+    let batch = std::fs::read_to_string(&spec).unwrap();
+    assert!(batch.contains(r#""op":"view.doc","view":"V","text":"What V is for.""#), "{batch}");
+    assert!(batch.contains(r#""viewpoint":"layered""#), "{batch}");
+
+    let before = std::fs::read_to_string(&model_file).unwrap();
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    let after = std::fs::read_to_string(&model_file).unwrap();
+    assert_eq!(first_difference(&before, &after), None, "the round trip changed the file");
+    assert_eq!(said(&m), "V\tlayered\tWhat V is for.");
+
+    // A replace at the prompt that names no viewpoint keeps the old one and
+    // the documentation; an explicit empty viewpoint clears it.
+    assert_eq!(seeded(&["view", "create", "V", "--replace"]).0, 0);
+    assert_eq!(said(&m), "V\tlayered\tWhat V is for.");
+    assert_eq!(
+        seeded(&["view", "auto", "V", "--from", "BA1", "--replace", "--viewpoint", ""]).0,
+        0
+    );
+    assert_eq!(said(&m), "V\t\tWhat V is for.");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// A batch `relation.add` with a `name` was accepted, reported success and
+/// wrote a relationship without one — `--dry-run` said the same. A field an
+/// operation does not take is refused now, and a name is a field it takes.
+#[test]
+fn a_batch_refuses_a_field_the_operation_does_not_take() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "BusinessActor", "A"]).0, 0);
+    assert_eq!(m.run(&["element", "add", "Node", "N"]).0, 0);
+
+    let ops = m.dir.path().join("named.jsonl");
+    std::fs::write(
+        &ops,
+        r#"{"op":"relation.add","type":"Association","source":"A","target":"N","name":"owns"}"#,
+    )
+    .unwrap();
+    let (code, _, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    let (_, out, _) = m.run(&["query", "type=Association", "--fields", "name,source_name", "-q"]);
+    assert_eq!(out.trim(), "owns\tA");
+    // In Archi's attribute order, so the line reads as Archi would write it.
+    assert!(m.text().contains(r#"AssociationRelationship" name="owns" id="#), "{}", m.text());
+
+    // And at the prompt.
+    assert_eq!(m.run(&["relation", "add", "Association", "N", "A", "--name", "serves"]).0, 0);
+    let (_, out, _) = m.run(&["query", "name=serves", "--fields", "type", "-q"]);
+    assert_eq!(out.trim(), "AssociationRelationship");
+
+    // A misspelt field is exit 2 naming the line, and nothing is written.
+    let before = m.text();
+    let bad = m.dir.path().join("bad.jsonl");
+    std::fs::write(
+        &bad,
+        concat!(
+            r#"{"op":"element.add","type":"Goal","name":"G"}"#,
+            "\n",
+            r#"{"op":"relation.add","type":"Association","source":"A","target":"N","nam":"x"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let (code, _, err) = m.run(&["apply", bad.to_str().unwrap(), "--dry-run"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("line 2") && err.contains("unknown field `nam`"), "{err}");
+    assert!(err.contains("batch.md"), "the hint says where the fields are listed: {err}");
+    let (code, _, _) = m.run(&["apply", bad.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert_eq!(m.text(), before, "the line that parsed was not written either");
+}
+
+/// `id:` needed the id exactly as stored. The examples write `id:5dde26f7`,
+/// the model's ids are `id-` and thirty-two hex characters, and a miss sent
+/// the reader to `amcli search` — for an id.
+#[test]
+fn an_id_resolves_without_its_prefix_and_by_a_unique_prefix() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "Goal", "Ledger"]).0, 0);
+    let (_, out, _) = m.run(&["query", "name=Ledger", "--fields", "id", "-q"]);
+    let id = out.trim().to_string();
+    let hex = id.strip_prefix("id-").expect("a new id has Archi's prefix");
+
+    for sel in [id.clone(), hex.to_string(), hex[..8].to_string(), format!("id-{}", &hex[..8])] {
+        let (code, out, err) = m.run(&["get", &format!("id:{sel}"), "--fields", "name", "-q"]);
+        assert_eq!(code, 0, "id:{sel}: {err}");
+        assert_eq!(out.trim(), "Ledger", "id:{sel}");
+    }
+
+    // Writes resolve the same way, and so do views.
+    assert_eq!(m.run(&["element", "rename", &format!("id:{}", &hex[..8]), "Book"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "V"]).0, 0);
+    let (_, out, _) = m.run(&["view", "list", "--fields", "id,name", "-q"]);
+    let view_id = out.lines().find(|l| l.ends_with("\tV")).unwrap().split('\t').next().unwrap();
+    let short = &view_id.strip_prefix("id-").unwrap()[..8];
+    assert_eq!(m.run(&["view", "render", &format!("id:{short}"), "--as", "json"]).0, 0);
+
+    // Too short to be a prefix, or nothing at all: a miss says what ids look
+    // like here and what `id:` takes, not "try search".
+    for sel in [&hex[..3], "ffffffff"] {
+        let (code, _, err) = m.run(&["get", &format!("id:{sel}")]);
+        assert_eq!(code, 3, "{err}");
+        // The sample is one of this model's own ids, whatever style it uses.
+        assert!(err.contains("ids in this model look like `"), "{err}");
+        assert!(err.contains("prefix"), "{err}");
+        assert!(!err.contains("amcli search"), "{err}");
+    }
+}
+
+/// `query -F json` rows carry no `properties` key — jq prints `null` for a
+/// missing key, which read as a null value — while `get` carries the list.
+/// The list is there on request, as the same array, and one property is a
+/// column.
+#[test]
+fn a_list_row_carries_properties_only_when_asked() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "Goal", "Ledger"]).0, 0);
+    assert_eq!(m.run(&["prop", "set", "Ledger", "owner", "team-a"]).0, 0);
+    let json = |args: &[&str]| -> serde_json::Value {
+        let (_, out, _) = m.run(args);
+        serde_json::from_str(&out).unwrap()
+    };
+
+    let row = json(&["query", "name=Ledger", "-F", "json"]);
+    assert!(row["data"][0].get("properties").is_none(), "absent, not null: {row}");
+
+    let expected = serde_json::json!([{"key": "owner", "value": "team-a"}]);
+    let got = json(&["get", "Ledger", "-F", "json"]);
+    assert_eq!(got["data"][0]["properties"], expected);
+    let got = json(&["query", "name=Ledger", "-F", "json", "--fields", "name,properties"]);
+    assert_eq!(got["data"][0]["properties"], expected, "the same shape on request: {got}");
+
+    // In text a list is a count, and one property is its value.
+    let (_, out, _) =
+        m.run(&["query", "name=Ledger", "--fields", "name,properties,prop:owner", "-q"]);
+    assert_eq!(out.trim(), "Ledger\t1\tteam-a");
+}
+
+/// `deg` filtered (`deg>10`) but did not print: `--fields name,deg` was a
+/// note after the rows, and nothing at all under `-q`. Now it prints, and a
+/// field no record has is refused before a row is — on a read. A write has
+/// already landed by then, so there it is a warning ahead of the row: an
+/// error would read as "the write failed", and the retry would add twice.
+#[test]
+fn a_field_no_record_has_is_refused_before_any_row() {
+    let m = Model::new("modelimporter_test.archimate");
+
+    let (code, out, err) =
+        m.run(&["query", "kind=element and deg>0", "--fields", "name,deg", "-q"]);
+    assert_eq!(code, 0, "{err}");
+    let r = rows(&out);
+    assert!(!r.is_empty());
+    for row in &r {
+        assert_eq!(row.len(), 2, "{row:?}");
+        assert!(row[1].parse::<u32>().unwrap() > 0, "deg is in + out: {row:?}");
+    }
+    let (_, out, _) = m.run(&["query", "name=BA1", "--fields", "in,out,deg", "-q"]);
+    let r = rows(&out).remove(0);
+    let (i, o, d) =
+        (r[0].parse::<u32>().unwrap(), r[1].parse::<u32>().unwrap(), r[2].parse::<u32>().unwrap());
+    assert_eq!(d, i + o);
+
+    // A misspelling is exit 2 with nothing on stdout, `-q` or not.
+    for quiet in [&["-q"][..], &[][..]] {
+        let mut args = vec!["query", "kind=element", "--fields", "name,dge"];
+        args.extend_from_slice(quiet);
+        let (code, out, err) = m.run(&args);
+        assert_eq!(code, 2, "{err}");
+        assert!(out.is_empty(), "rows were printed under a wrong projection: {out}");
+        assert!(err.contains("no such field: dge"), "{err}");
+        assert!(err.contains("deg"), "the columns it does have are named: {err}");
+    }
+
+    // On a write the element exists, the exit is 0, and the warning is said
+    // whatever the flags — before the row.
+    let (code, out, err) = m.run(&["element", "add", "Goal", "Landed", "--fields", "bogus", "-q"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(err.contains("no such field: bogus"), "{err}");
+    assert!(out.trim().is_empty(), "nothing matched the projection: {out}");
+    let (_, out, _) = m.run(&["query", "name=Landed", "--count"]);
+    assert_eq!(out.trim(), "1", "the write landed");
+}
+
+/// `get` listed a relationship as `other_id`/`other_name`, `query
+/// 'kind=relation'` as `source`/`target` — two shapes for one thing, so no
+/// one `jq` filter read both. `get` keeps `direction` and `other_*` and
+/// carries the ends too.
+#[test]
+fn a_relationship_reads_the_same_wherever_it_turns_up() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["relation", "add", "Association", "BA1", "BR1", "--name", "owns"]).0, 0);
+    let json = |args: &[&str]| -> serde_json::Value {
+        let (_, out, _) = m.run(args);
+        serde_json::from_str(&out).unwrap()
+    };
+    let nested = json(&["get", "BA1", "-F", "json"])["data"][0]["relations"].clone();
+    let owns = nested.as_array().unwrap().iter().find(|r| r["name"] == "owns").unwrap();
+    for key in [
+        "id",
+        "direction",
+        "type",
+        "other_id",
+        "other_name",
+        "source",
+        "source_name",
+        "target",
+        "target_name",
+    ] {
+        assert!(owns.get(key).is_some(), "get's relation lacks `{key}`: {owns}");
+    }
+
+    let listed = json(&["query", "name=owns", "-F", "json"])["data"][0].clone();
+    for key in ["id", "type", "name", "source", "source_name", "target", "target_name"] {
+        assert_eq!(owns[key], listed[key], "`{key}` differs between get and query");
+    }
+    assert_eq!(owns["direction"], "out");
+    assert_eq!(owns["source_name"], "BA1");
+    assert_eq!(owns["target_name"], "BR1");
+}
+
+/// Ten scratch copies of a model beside the working directory made every
+/// `apply` an exit 4. Still an exit 4 — a dry run that silently picked the
+/// real model beside the batch would be a real run — but the hint now names
+/// `AMCLI_MODEL`, and the one model the batch file sits beside.
+#[test]
+fn an_ambiguous_discovery_names_the_model_beside_the_batch() {
+    let m = Model::new("modelimporter_test.archimate");
+    let scratch = m.dir.path().join("scratch");
+    let real = m.dir.path().join("real");
+    std::fs::create_dir_all(&scratch).unwrap();
+    std::fs::create_dir_all(&real).unwrap();
+    for copy in ["a", "b"] {
+        std::fs::copy(m.path(), scratch.join(format!("{copy}.archimate"))).unwrap();
+    }
+    std::fs::copy(m.path(), real.join("one.archimate")).unwrap();
+    let batch = real.join("fix.jsonl");
+    std::fs::write(&batch, "{\"op\":\"element.add\",\"type\":\"Goal\",\"name\":\"Z\"}\n").unwrap();
+
+    let out = Command::cargo_bin("amcli")
+        .unwrap()
+        .current_dir(&scratch)
+        .args(["apply", "../real/fix.jsonl", "--dry-run"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(4));
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("2 models in"), "{err}");
+    assert!(err.contains("AMCLI_MODEL"), "{err}");
+    assert!(err.contains("one.archimate"), "the model beside the batch is named: {err}");
+    assert!(err.contains("pass -m"), "{err}");
+
+    // Named explicitly, the same command runs.
+    let out = Command::cargo_bin("amcli")
+        .unwrap()
+        .current_dir(&scratch)
+        .args(["-m", "../real/one.archimate", "apply", "../real/fix.jsonl", "--dry-run"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
 }

@@ -345,6 +345,23 @@ fn main() {
 
     match run(&cli) {
         Ok(mut out) => {
+            // A column nobody has is refused before a row is printed. On a
+            // read that is a usage error; on a write the file has already
+            // changed, and an error now would say the write failed and invite
+            // a retry that lands it twice — so it is a warning, said first
+            // and whatever the flags.
+            if let Some(missing) = printer.unknown_fields(&out) {
+                let hint = "besides a command's own columns, --fields takes doc, layer, kind, \
+                            deg, properties and prop:KEY";
+                if out.wrote {
+                    out.warnings.insert(0, format!("{missing} — {hint}"));
+                } else {
+                    let e = CliError::new(Code::Usage, "usage", missing).hint(hint);
+                    printer.print_error(&e, &mut stdout, &mut stderr);
+                    let _ = stdout.flush();
+                    std::process::exit(Code::Usage as i32);
+                }
+            }
             let verdict = out.exit;
             let then = out.then.take();
             printer.print(out, &mut stdout, &mut stderr);
@@ -385,7 +402,13 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         _ => {}
     }
 
-    let path = find_model(cli.model.as_deref())?;
+    // A batch file lives somewhere, and that somewhere is worth naming when
+    // the working directory cannot say which model was meant.
+    let beside = match &cli.command {
+        Command::Apply { file } if file != "-" => Path::new(file).parent().map(Path::to_path_buf),
+        _ => None,
+    };
+    let path = find_model(cli.model.as_deref(), beside.as_deref())?;
     let mut model = Model::open(&path).map_err(|e| {
         CliError::new(Code::Io, "io", e.to_string())
             .hint("check the path, or pass -m to point at the model")
@@ -494,7 +517,13 @@ fn cli_write_opts(cli: &Cli) -> write::Opts {
 
 /// Explicit flag, then the environment, then the nearest model walking up. An
 /// ambiguous directory is reported rather than guessed at.
-fn find_model(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
+///
+/// `beside` is the directory of a batch file being applied, when there is
+/// one. It is never chosen: an agent that copied the model into a scratch
+/// directory to dry-run there has ten copies beside it and the real model
+/// beside the batch, and silently picking the real one is how a dry run
+/// lands. It is named in the hint instead, so the retry needs no `find`.
+fn find_model(explicit: Option<&Path>, beside: Option<&Path>) -> Result<PathBuf, CliError> {
     if let Some(p) = explicit {
         return Ok(p.to_path_buf());
     }
@@ -502,28 +531,42 @@ fn find_model(explicit: Option<&Path>) -> Result<PathBuf, CliError> {
         return Ok(PathBuf::from(p));
     }
 
+    let models_in = |dir: &Path| -> Vec<PathBuf> {
+        let mut found: Vec<PathBuf> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("archimate"))
+            .collect();
+        found.sort();
+        found
+    };
+
     let mut dir = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
     loop {
-        let mut found: Vec<PathBuf> = Vec::new();
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for e in entries.flatten() {
-                let p = e.path();
-                if p.extension().and_then(|s| s.to_str()) == Some("archimate") {
-                    found.push(p);
-                }
-            }
-        }
-        found.sort();
+        let mut found = models_in(&dir);
         match found.len() {
             1 => return Ok(found.remove(0)),
             0 => {}
             _ => {
+                let mut hint =
+                    String::from("pass -m to choose one, or set AMCLI_MODEL for the session");
+                if let Some(b) = beside
+                    && let [one] = models_in(b).as_slice()
+                {
+                    hint.push_str(&format!(
+                        "; the batch file sits beside `{}` — -m {} applies it there",
+                        one.display(),
+                        one.display()
+                    ));
+                }
                 return Err(CliError::new(
                     Code::Ambiguous,
                     "ambiguous",
                     format!("{} models in `{}`", found.len(), dir.display()),
                 )
-                .hint("pass -m to choose one")
+                .hint(hint)
                 .rows(
                     found
                         .iter()

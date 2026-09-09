@@ -31,7 +31,7 @@ fn a_seed_makes_the_same_edits_produce_the_same_file() {
         let a =
             m.add_element(ElementType::ApplicationComponent, "Payment API", None, None).unwrap();
         let b = m.add_element(ElementType::DataObject, "Payment Record", None, None).unwrap();
-        m.add_relation(RelType::Access, a, b, None, None).unwrap();
+        m.add_relation(RelType::Access, a, b, None, None, None).unwrap();
         // Two elements sharing a type and a name: the second cannot reuse the
         // first's id, and which of them gets the bumped one must not vary.
         m.add_element(ElementType::ApplicationComponent, "Payment API", None, None).unwrap();

@@ -6,7 +6,7 @@ use amcli_graph::{Dir, EdgeFilter, Graph, MatchField, Resolution, Selector};
 use amcli_model::{ConceptId, Model, RelType};
 use amcli_validate::{Fixability, Level};
 
-use crate::output::{CliError, Code, Output, Row};
+use crate::output::{CliError, Code, Output, Row, Value};
 use crate::write;
 
 pub struct Ctx {
@@ -56,17 +56,25 @@ fn capped(rows: Vec<Row>, total: usize) -> Output {
 /// appearing in the middle of a record would repoint every `cut -f5` already
 /// written against it. Asked for, they go on the end, and a command that
 /// already prints one keeps its own.
+///
+/// `deg` is the one the filter compares on — `in + out` — and `properties`
+/// is the whole list, which `get` prints unasked and a list row does not:
+/// in JSON it is the same array `get` carries, in text a count.
 pub fn carry(mut out: Output, m: &Model, fields: Option<&Vec<String>>) -> Output {
     let asked: Vec<&str> = fields
         .map(Vec::as_slice)
         .unwrap_or_default()
         .iter()
         .map(String::as_str)
-        .filter(|f| matches!(*f, "doc" | "layer" | "kind") || f.starts_with("prop:"))
+        .filter(|f| {
+            matches!(*f, "doc" | "layer" | "kind" | "deg" | "properties") || f.starts_with("prop:")
+        })
         .collect();
     if asked.is_empty() {
         return out;
     }
+    // Built once, and only when a degree is asked for.
+    let graph = asked.contains(&"deg").then(|| Graph::build(m));
     for row in &mut out.rows {
         let Some(id) = row.0.iter().find(|(k, _)| k.as_ref() == "id").and_then(|(_, v)| match v {
             crate::output::Value::Str(s) => Some(s.clone()),
@@ -76,16 +84,17 @@ pub fn carry(mut out: Output, m: &Model, fields: Option<&Vec<String>>) -> Output
         };
         // A view is a node with documentation and properties, exactly as a
         // concept is, so `view list --fields name,doc` is the same mechanism.
-        let (node, kind, layer) = if let Some(c) = m.concept_by_id(&id) {
-            let c = m.concept(c);
+        let (node, kind, layer, concept) = if let Some(c) = m.concept_by_id(&id) {
+            let concept = m.concept(c);
             (
-                c.node,
-                if c.kind.is_relationship() { "relation" } else { "element" },
-                c.kind.layer().map(|l| l.as_str().to_string()),
+                concept.node,
+                if concept.kind.is_relationship() { "relation" } else { "element" },
+                concept.kind.layer().map(|l| l.as_str().to_string()),
+                Some(c),
             )
         } else if let Some(v) = m.view_by_id(&id) {
             let v = m.view(v);
-            (v.node, if v.is_sketch { "sketch" } else { "view" }, None)
+            (v.node, if v.is_sketch { "sketch" } else { "view" }, None, None)
         } else {
             continue;
         };
@@ -94,20 +103,32 @@ pub fn carry(mut out: Output, m: &Model, fields: Option<&Vec<String>>) -> Output
                 continue;
             }
             let value = match *f {
-                "doc" => m.documentation(node).unwrap_or_default(),
-                "kind" => kind.to_string(),
-                "layer" => layer.clone().unwrap_or_default(),
-                key => m
-                    .properties(node)
-                    .into_iter()
-                    .find(|(k, _)| k.eq_ignore_ascii_case(&key["prop:".len()..]))
-                    .map(|(_, v)| v)
-                    .unwrap_or_default(),
+                "doc" => Value::Str(m.documentation(node).unwrap_or_default()),
+                "kind" => Value::Str(kind.to_string()),
+                "layer" => Value::Str(layer.clone().unwrap_or_default()),
+                "deg" => match (graph.as_ref(), concept) {
+                    (Some(g), Some(c)) => {
+                        let (i, o) = g.degree(c);
+                        Value::Num((i + o) as i64)
+                    }
+                    // A view has no degree; the column is there and empty.
+                    _ => Value::Str(String::new()),
+                },
+                "properties" => Value::Rows(
+                    m.properties(node)
+                        .into_iter()
+                        .map(|(k, v)| Row::new().s("key", k).s("value", v))
+                        .collect(),
+                ),
+                key => Value::Str(
+                    m.properties(node)
+                        .into_iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(&key["prop:".len()..]))
+                        .map(|(_, v)| v)
+                        .unwrap_or_default(),
+                ),
             };
-            row.0.push((
-                std::borrow::Cow::Owned((*f).to_string()),
-                crate::output::Value::Str(value),
-            ));
+            row.0.push((std::borrow::Cow::Owned((*f).to_string()), value));
         }
     }
     out
@@ -115,7 +136,12 @@ pub fn carry(mut out: Output, m: &Model, fields: Option<&Vec<String>>) -> Output
 
 /// Resolve a selector to exactly one concept, or fail with something the caller
 /// can act on: candidates to choose from, or nearby names to try.
-fn one(g: &Graph<'_>, sel: &str) -> Result<ConceptId, CliError> {
+///
+/// Every command resolves through here, reads and writes alike. There used
+/// to be four copies — one per module — and they answered a miss four ways,
+/// which is how `get` came to send a reader who typed an id to `amcli
+/// search`.
+pub fn resolve(g: &Graph<'_>, sel: &str) -> Result<ConceptId, CliError> {
     let selector = Selector::parse(sel);
     match selector.resolve_one(g) {
         Resolution::One(c) => Ok(c),
@@ -146,6 +172,17 @@ fn one(g: &Graph<'_>, sel: &str) -> Result<ConceptId, CliError> {
             let m = g.model();
             let err =
                 CliError::new(Code::NotFound, "not_found", format!("nothing matches `{sel}`"));
+            if let Selector::Id(_) = selector {
+                // An id that misses is not a name to search for. Say what
+                // the ids here look like and which spellings resolve.
+                let sample = m.concepts().map(|c| c.id.as_str()).next().unwrap_or("id-…");
+                return Err(err.hint(format!(
+                    "no concept has that id; ids in this model look like `{sample}` — `id:` \
+                     takes the whole id, the hex without `id-`, or a prefix of it at least {} \
+                     characters long",
+                    amcli_graph::select::ID_PREFIX_MIN
+                )));
+            }
             if suggestions.is_empty() {
                 Err(err.hint("try `amcli search` with part of the name"))
             } else {
@@ -253,7 +290,7 @@ fn unknown_type(g: &Graph<'_>, name: &str) -> CliError {
     e.rows(used.into_iter().map(|(t, n)| Row::new().s("type", t).n("count", n as i64)).collect())
 }
 
-fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
+pub fn concept_row(m: &Model, g: &Graph<'_>, c: ConceptId) -> Row {
     let concept = m.concept(c);
     let (i, o) = g.degree(c);
     let row = Row::new()
@@ -313,7 +350,7 @@ fn clip(s: &str, full: bool) -> String {
 
 pub fn get(g: &Graph<'_>, ctx: &Ctx, sel: &str, full: bool) -> Result<Output, CliError> {
     let m = g.model();
-    let c = one(g, sel)?;
+    let c = resolve(g, sel)?;
     let concept = m.concept(c);
 
     let rels: Vec<Row> = g
@@ -322,7 +359,7 @@ pub fn get(g: &Graph<'_>, ctx: &Ctx, sel: &str, full: bool) -> Result<Output, Cl
         .map(|a| {
             let rel = m.concept(a.rel);
             let other = m.concept(a.other);
-            Row::new()
+            let row = Row::new()
                 // The relationship's own id: without it there is no way to
                 // address a relationship for editing.
                 .s("id", rel.id.clone())
@@ -331,6 +368,10 @@ pub fn get(g: &Graph<'_>, ctx: &Ctx, sel: &str, full: bool) -> Result<Output, Cl
                 .s("other_id", other.id.clone())
                 .s("other_type", other.kind.name())
                 .s("other_name", other.name.clone())
+                .s("name", rel.name.clone());
+            // And the ends as `query 'kind=relation'` prints them, so one
+            // `jq` filter reads a relationship wherever it turns up.
+            with_ends(row, m, rel)
         })
         .collect();
 
@@ -439,7 +480,7 @@ pub fn neighbors(
 ) -> Result<Output, CliError> {
     let m = g.model();
     let keep = type_filter(g, ty)?;
-    let c = one(g, sel)?;
+    let c = resolve(g, sel)?;
     let mut arcs = g.neighbors(c, direction(dir)?, &rel_filter(rel)?);
     arcs.retain(|a| keep(m, a.other));
     let total = arcs.len();
@@ -468,7 +509,7 @@ pub fn trace(
 ) -> Result<Output, CliError> {
     let m = g.model();
     let keep = type_filter(g, ty)?;
-    let root = one(g, sel)?;
+    let root = resolve(g, sel)?;
     let max_nodes = if ctx.limit == 0 { 100_000 } else { ctx.limit.max(50) * 10 };
     let sub = g.k_hop(&[root], depth, direction(dir)?, &rel_filter(rel)?, max_nodes);
 
@@ -535,8 +576,8 @@ pub fn path(
     depth: u32,
 ) -> Result<Output, CliError> {
     let m = g.model();
-    let a = one(g, from)?;
-    let b = one(g, to)?;
+    let a = resolve(g, from)?;
+    let b = resolve(g, to)?;
     let d = direction(dir)?;
     let f = EdgeFilter::default();
 
@@ -588,7 +629,7 @@ pub fn impact(
 ) -> Result<Output, CliError> {
     let m = g.model();
     let keep = type_filter(g, ty)?;
-    let c = one(g, sel)?;
+    let c = resolve(g, sel)?;
     let max = if ctx.limit == 0 { 100_000 } else { ctx.limit.max(50) * 10 };
     let (mut hits, truncated) = g.impact(&[c], direction(dir)?, depth, &EdgeFilter::default(), max);
 
@@ -612,7 +653,7 @@ pub fn impact(
 
 pub fn containment(g: &Graph<'_>, ctx: &Ctx, sel: &str, up: bool) -> Result<Output, CliError> {
     let m = g.model();
-    let c = one(g, sel)?;
+    let c = resolve(g, sel)?;
     let found = if up {
         g.ancestors(c, &Graph::CONTAINMENT)
     } else {

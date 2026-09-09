@@ -14,7 +14,7 @@ up, and no rollback step that could itself fail.
 ## Operations
 
     {"op":"element.add","type":"ApplicationComponent","name":"X","folder":"/Application","doc":"…","props":{"owner":"team"},"ref":"x","if_absent":true}
-    {"op":"relation.add","type":"Serving","source":"ref:x","target":"Y","access":"rw","doc":"…","ref":"r","if_absent":true}
+    {"op":"relation.add","type":"Serving","source":"ref:x","target":"Y","name":"…","access":"rw","doc":"…","ref":"r","if_absent":true,"no_draw":false}
     {"op":"element.rename","target":"ref:x","name":"New name"}
     {"op":"element.doc","target":"id:abc","text":"…"}
     {"op":"element.delete","target":"id:abc","if_present":true}
@@ -25,9 +25,23 @@ up, and no rollback step that could itself fail.
     {"op":"folder.delete","path":"/Application/Payments"}
 
 `access` is Access relationships only: `read`, `write`, `rw`, `unspecified`.
+`name` labels the line — Archi reads an Association as "related to" without
+one and "owns" with it; most relationships have none.
 
 In every op but `relation.add`, `target` is the thing operated on. In
 `relation.add` — and only there — `source` and `target` are the two ends.
+
+**A field an operation does not take fails the line**, exit 2, naming the
+line and the fields the operation does take — nothing is written, and
+`--dry-run` says the same. A `relation.add` with a `name` used to be accepted,
+reported as applied, and written without one; a batch that silently does less
+than it says is not atomic. A field the skill documents and the binary
+refuses is an old binary: the hint says so, and how to upgrade.
+
+**`relation.add` draws the relationship on every view that already shows
+both ends**, exactly as the command does; the row's `views` counts them.
+`"no_draw":true` adds it to the model only. A line skipped by `if_absent`
+draws nothing and reports the views the existing relationship is on.
 
 `relation.delete` takes the relationship itself, which you address by id or by
 a `ref:` from an earlier line; a relationship rarely has a name to call it by.
@@ -49,12 +63,12 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.create","name":"Payments","viewpoint":"application_cooperation","folder":"/Views/Payments","replace":true}
     {"op":"view.add","view":"Payments","target":"ref:x"}
     {"op":"view.add","view":"Payments","target":"Checkout","x":240,"y":0,"no_connect":true}
+    {"op":"view.doc","view":"Payments","text":"What this drawing is for. Empty clears it."}
     {"op":"view.auto","name":"Around X","from":"ref:x","depth":2,"direction":"both","layout":"auto","viewpoint":"application_cooperation","folder":"/Views/Payments","replace":true}
     {"op":"view.layout","view":"Payments","algorithm":"auto","relayout_all":true}
     {"op":"view.rename","view":"Payments","name":"Payments and Checkout"}
     {"op":"view.move","view":"Payments","folder":"/Views/Programme"}
     {"op":"view.viewpoint","view":"Payments","viewpoint":"application_cooperation"}
-    {"op":"view.doc","view":"Payments","text":"What this drawing is for. Empty clears it."}
     {"op":"view.delete","view":"Old Sketch"}
 
 A view built member by member — create it, add each element, lay it out —
@@ -66,6 +80,20 @@ covers them; and with `replace` on the create and a seed set, re-running
 the batch is a no-op in git. `view.rename` is the exception: like a second
 `view rename` at the prompt it fails on the re-run, so keep it out of a
 batch meant to be re-run.
+
+`view.add` of a concept already on the view adds nothing — the row says
+`added false` — but still draws any relationship that concept can newly
+draw to what is there. That is what lets a rebuild batch be re-run without
+leaving a second box for one element, and what lets a view catch up with
+the model.
+
+`view.create` with `replace` redraws the view and keeps what it said about
+itself: the viewpoint unless the line sets one (`""` clears it), the
+documentation unless a later `view.doc` line replaces it, and the
+properties. `amcli export views` writes the `view.doc` line for every
+documented view and the `viewpoint` on every `view.create`, so the batch it
+produces rebuilds the views with their documentation, and applying it is
+byte-identical.
 
 ## `ref`
 

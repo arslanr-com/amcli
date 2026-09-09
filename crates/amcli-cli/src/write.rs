@@ -5,7 +5,7 @@
 //! so and stops unless told otherwise — with the impact report *as* the error,
 //! so the natural retry is an informed one.
 
-use amcli_graph::{Graph, Resolution, Selector};
+use amcli_graph::Graph;
 use amcli_model::{ConceptId, ElementType, Model, RelType};
 use clap::Subcommand;
 
@@ -52,7 +52,8 @@ pub enum ElementCmd {
 
 #[derive(Subcommand, Clone)]
 pub enum RelationCmd {
-    /// Add a relationship. Source and target are positional, in that order.
+    /// Add a relationship, and draw it on every view that shows both ends.
+    /// Source and target are positional, in that order.
     Add {
         r#type: String,
         source: String,
@@ -62,6 +63,12 @@ pub enum RelationCmd {
         access: Option<String>,
         #[arg(long)]
         doc: Option<String>,
+        /// A label for the line, e.g. "owns" on an Association.
+        #[arg(long)]
+        name: Option<String>,
+        /// Add it to the model only; draw it on no view.
+        #[arg(long)]
+        no_draw: bool,
     },
     /// Delete a relationship.
     Delete { selector: String },
@@ -136,44 +143,8 @@ pub fn save(m: &Model) -> Result<(), CliError> {
 
 /// Resolve within a temporarily built index. Writes rebuild the index anyway, so
 /// there is no point keeping one alive across the mutation.
-fn resolve(m: &Model, sel: &str) -> Result<ConceptId, CliError> {
-    let g = Graph::build(m);
-    match Selector::parse(sel).resolve_one(&g) {
-        Resolution::One(c) => Ok(c),
-        Resolution::Ambiguous(cs) => Err(CliError::new(
-            Code::Ambiguous,
-            "ambiguous",
-            format!("{} concepts match `{sel}`", cs.len()),
-        )
-        .hint("re-run with one of these selectors")
-        .rows(
-            cs.iter()
-                .map(|c| {
-                    let concept = m.concept(*c);
-                    Row::new()
-                        .s("selector", format!("id:{}", concept.id))
-                        .s("type", concept.kind.name())
-                        .s("name", concept.name.clone())
-                        .s("folder", m.folder_path_of(concept))
-                })
-                .collect(),
-        )),
-        Resolution::NotFound { suggestions } => {
-            Err(CliError::new(Code::NotFound, "not_found", format!("nothing matches `{sel}`"))
-                .hint("did you mean one of these?")
-                .rows(
-                    suggestions
-                        .iter()
-                        .map(|c| {
-                            let concept = m.concept(*c);
-                            Row::new()
-                                .s("selector", format!("id:{}", concept.id))
-                                .s("name", concept.name.clone())
-                        })
-                        .collect(),
-                ))
-        }
-    }
+pub fn resolve(m: &Model, sel: &str) -> Result<ConceptId, CliError> {
+    crate::read::resolve(&Graph::build(m), sel)
 }
 
 fn element_type(name: &str) -> Result<ElementType, CliError> {
@@ -248,7 +219,7 @@ fn written(m: &Model, opts: &Opts, mut row: Row) -> Result<Output, CliError> {
     if !opts.dry_run {
         save(m)?;
     }
-    let out = Output::one(row).meta("checksum", m.checksum().map_err(io_err)?);
+    let out = Output::one(row).meta("checksum", m.checksum().map_err(io_err)?).wrote(!opts.dry_run);
     Ok(if opts.dry_run { out.note("dry run: nothing was written") } else { out })
 }
 
@@ -364,23 +335,29 @@ fn delete(opts: &Opts, m: &mut Model, selector: &str) -> Result<Output, CliError
 
 fn relation(opts: &Opts, m: &mut Model, cmd: &RelationCmd) -> Result<Output, CliError> {
     match cmd {
-        RelationCmd::Add { r#type, source, target, access, doc } => {
+        RelationCmd::Add { r#type, source, target, access, doc, name, no_draw } => {
             let ty = rel_type(r#type)?;
             let s = resolve(m, source)?;
             let t = resolve(m, target)?;
             let a = access.as_deref().map(access_value).transpose()?;
             let c = m
-                .add_relation(ty, s, t, a, doc.as_deref())
+                .add_relation(ty, s, t, a, doc.as_deref(), name.as_deref())
                 .map_err(|e| invalid(&e).hint("run `amcli get` on either end to see what it is"))?;
-            written(
+            let drawn = if *no_draw { Vec::new() } else { draw(m, c)? };
+            let out = written(
                 m,
                 opts,
                 Row::new()
                     .s("id", m.concept(c).id.clone())
                     .s("type", ty.info().short)
                     .s("source", m.concept(s).id.clone())
-                    .s("target", m.concept(t).id.clone()),
-            )
+                    .s("target", m.concept(t).id.clone())
+                    .n("views", drawn.len() as i64),
+            )?;
+            Ok(match drawn_note(m, &[s, t], &drawn) {
+                Some(n) => out.note(n),
+                None => out,
+            })
         }
         RelationCmd::Delete { selector } => delete(opts, m, selector),
         RelationCmd::Doc { selector, text } => {
@@ -389,6 +366,36 @@ fn relation(opts: &Opts, m: &mut Model, cmd: &RelationCmd) -> Result<Output, Cli
             written(m, opts, Row::new().s("id", m.concept(c).id.clone()))
         }
     }
+}
+
+/// Draw a relationship on every view that shows both of its ends, and say
+/// which views those were.
+///
+/// A relationship between two things a drawing already shows used to reach
+/// no drawing, and nothing said so: the model then held a relationship on
+/// no view, which only a separate query revealed, and the one way to draw it
+/// was to rebuild the view member by member. `view add` draws every
+/// relationship the added element brings to what is there; this is the same
+/// rule from the other side.
+pub fn draw(m: &mut Model, rel: ConceptId) -> Result<Vec<String>, CliError> {
+    let views = m.draw_relation_on_views(rel).map_err(invalid)?;
+    Ok(views.into_iter().map(|v| m.view(v).name.clone()).collect())
+}
+
+/// What to say about where a relationship was drawn: the views by name, or
+/// that no view shows both ends when at least one end is drawn somewhere.
+/// Silence when neither end is on any view — a model without drawings has
+/// nothing to hear.
+pub fn drawn_note(m: &Model, ends: &[ConceptId], drawn: &[String]) -> Option<String> {
+    if !drawn.is_empty() {
+        return Some(format!("drawn on {} view(s): {}", drawn.len(), drawn.join(", ")));
+    }
+    let g = Graph::build(m);
+    let on_some_view = ends.iter().any(|c| !g.views_of(*c).is_empty());
+    on_some_view.then(|| {
+        "not drawn: no view shows both ends; `amcli view add` the missing end to draw it there"
+            .to_string()
+    })
 }
 
 fn folder(opts: &Opts, m: &mut Model, cmd: &FolderCmd) -> Result<Output, CliError> {

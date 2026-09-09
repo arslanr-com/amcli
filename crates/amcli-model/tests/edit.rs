@@ -69,14 +69,14 @@ fn an_illegal_relationship_is_refused_and_the_message_says_what_is_legal() {
     let comp = m.add_element(ElementType::ApplicationComponent, "Svc", None, None).unwrap();
 
     // ArchiMate permits only Association from a DataObject to a Component.
-    let err = m.add_relation(RelType::Serving, data, comp, None, None).unwrap_err();
+    let err = m.add_relation(RelType::Serving, data, comp, None, None, None).unwrap_err();
     let msg = err.to_string();
     assert!(msg.contains("does not permit Serving"), "{msg}");
     assert!(msg.contains("permitted here: Association"), "the error has to teach: {msg}");
     assert!(matches!(err, EditError::InvalidRelationship { .. }));
 
     // And the legal one goes through.
-    assert!(m.add_relation(RelType::Association, data, comp, None, None).is_ok());
+    assert!(m.add_relation(RelType::Association, data, comp, None, None, None).is_ok());
 }
 
 #[test]
@@ -84,12 +84,12 @@ fn a_duplicate_relationship_is_refused() {
     let mut m = open("testmodel1.archimate");
     let f = m.add_element(ElementType::ApplicationFunction, "F", None, None).unwrap();
     let d = m.add_element(ElementType::DataObject, "D", None, None).unwrap();
-    m.add_relation(RelType::Access, f, d, Some(3), None).unwrap();
+    m.add_relation(RelType::Access, f, d, Some(3), None, None).unwrap();
 
-    let err = m.add_relation(RelType::Access, f, d, Some(1), None).unwrap_err();
+    let err = m.add_relation(RelType::Access, f, d, Some(1), None, None).unwrap_err();
     assert!(matches!(err, EditError::DuplicateRelationship { .. }), "{err}");
     // A different type between the same pair is a different relationship.
-    assert!(m.add_relation(RelType::Association, f, d, None, None).is_ok());
+    assert!(m.add_relation(RelType::Association, f, d, None, None, None).is_ok());
 }
 
 #[test]
@@ -99,10 +99,10 @@ fn every_relationship_at_a_junction_must_share_its_type() {
     let a = m.add_element(ElementType::ApplicationProcess, "A", None, None).unwrap();
     let b = m.add_element(ElementType::ApplicationProcess, "B", None, None).unwrap();
 
-    m.add_relation(RelType::Triggering, a, j, None, None).unwrap();
-    let err = m.add_relation(RelType::Flow, j, b, None, None).unwrap_err();
+    m.add_relation(RelType::Triggering, a, j, None, None, None).unwrap();
+    let err = m.add_relation(RelType::Flow, j, b, None, None, None).unwrap_err();
     assert!(matches!(err, EditError::MixedJunction(_, "Triggering")), "{err}");
-    assert!(m.add_relation(RelType::Triggering, j, b, None, None).is_ok());
+    assert!(m.add_relation(RelType::Triggering, j, b, None, None, None).is_ok());
 }
 
 #[test]
@@ -113,18 +113,18 @@ fn access_type_zero_is_left_out_because_archi_leaves_it_out() {
 
     // 0 is the schema default (write), and EMF omits defaults. Writing it
     // explicitly would differ from a file Archi produced.
-    m.add_relation(RelType::Access, f, d, Some(0), None).unwrap();
+    m.add_relation(RelType::Access, f, d, Some(0), None, None).unwrap();
     assert!(!text(&m).contains("accessType"));
 
     let d2 = m.add_element(ElementType::DataObject, "D2", None, None).unwrap();
-    m.add_relation(RelType::Access, f, d2, Some(3), None).unwrap();
+    m.add_relation(RelType::Access, f, d2, Some(3), None, None).unwrap();
     assert!(text(&m).contains(r#"accessType="3""#));
 
     // A fresh target, so this is rejected for the access type rather than for
     // duplicating the relationship above.
     let d3 = m.add_element(ElementType::DataObject, "D3", None, None).unwrap();
     assert!(matches!(
-        m.add_relation(RelType::Access, f, d3, Some(9), None),
+        m.add_relation(RelType::Access, f, d3, Some(9), None, None),
         Err(EditError::BadAccessType(9))
     ));
 }
@@ -171,9 +171,9 @@ fn deleting_cascades_through_relationships_that_point_at_relationships() {
     let a = m.add_element(ElementType::ApplicationComponent, "A", None, None).unwrap();
     let b = m.add_element(ElementType::ApplicationComponent, "B", None, None).unwrap();
     let note = m.add_element(ElementType::ApplicationComponent, "N", None, None).unwrap();
-    let r1 = m.add_relation(RelType::Serving, a, b, None, None).unwrap();
+    let r1 = m.add_relation(RelType::Serving, a, b, None, None, None).unwrap();
     // ArchiMate lets an association target a relationship.
-    m.add_relation(RelType::Association, note, r1, None, None).unwrap();
+    m.add_relation(RelType::Association, note, r1, None, None, None).unwrap();
 
     let plan = m.delete_plan(a);
     assert_eq!(plan.relationships.len(), 2, "the serving, and the association to it");
@@ -185,8 +185,8 @@ fn a_junction_left_with_one_connection_is_flagged_not_removed() {
     let j = m.add_element(ElementType::Junction, "J", None, None).unwrap();
     let a = m.add_element(ElementType::ApplicationProcess, "A", None, None).unwrap();
     let b = m.add_element(ElementType::ApplicationProcess, "B", None, None).unwrap();
-    m.add_relation(RelType::Triggering, a, j, None, None).unwrap();
-    m.add_relation(RelType::Triggering, j, b, None, None).unwrap();
+    m.add_relation(RelType::Triggering, a, j, None, None, None).unwrap();
+    m.add_relation(RelType::Triggering, j, b, None, None, None).unwrap();
 
     let plan = m.delete_plan(a);
     assert_eq!(plan.degenerate_junctions, ["J"]);
@@ -350,7 +350,7 @@ fn every_edit_leaves_a_model_that_still_loads() {
         m.add_element(ElementType::ApplicationService, "New Service", None, Some("Docs")).unwrap();
     m.set_property(c, "k", "v").unwrap();
     let other = m.concepts_with_ids().find(|(_, x)| x.name == "BA1").map(|(i, _)| i).unwrap();
-    m.add_relation(RelType::Serving, c, other, None, None).unwrap();
+    m.add_relation(RelType::Serving, c, other, None, None, None).unwrap();
     m.rename(c, "Renamed Service");
 
     let reopened = Model::from_bytes(m.to_bytes().unwrap(), "x.archimate").unwrap();

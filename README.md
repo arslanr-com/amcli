@@ -177,7 +177,7 @@ amcli path "Web App" "Customer Database"      # how are these connected?
 amcli query 'kind=element and view=0'         # modelled but drawn nowhere
 
 amcli element  add ApplicationComponent "Refund Service" -f /Application
-amcli relation add Access "Refund Service" "Refund Record" --access rw
+amcli relation add Access "Refund Service" "Refund Record" --access rw   # drawn wherever both ends already are
 amcli prop set "Refund Service" owner team-payments
 amcli element  delete "Refund Service" -y     # cascades, and says to what
 

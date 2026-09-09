@@ -82,7 +82,11 @@ take you backwards.
 
 amcli finds the model on its own: `-m PATH`, else `$AMCLI_MODEL`, else the
 nearest `*.archimate` walking up from the working directory. If several are
-found it exits 4 and lists them — pass `-m`.
+found it exits 4 and lists them — pass `-m`, or `export AMCLI_MODEL=…` once
+for the session. It never guesses: `apply` with ten scratch copies beside you
+and the real model beside the batch file names that model in the hint rather
+than quietly applying to it, because a dry run that picks a model you did not
+name is a real run.
 
 ## The loop
 
@@ -119,11 +123,24 @@ the same shape — `{"ok":…,"data":[…],"meta":{…}}`, success or failure �
     amcli query 'prop:reg-id=RG-14' --fields name,prop:reg-id   # print what you filtered on
 
 **A field you can filter on is a field you can print.** Besides the columns a
-command prints by default, `--fields` takes `doc`, `layer`, `kind` and any
-`prop:KEY` — matched case-insensitively, as the filter matches it — and the
-value is appended as a column, empty where the concept has none. That is the
-route to one property: you do not need `-F json` to read it. It works on
-`view list` too.
+command prints by default, `--fields` takes `doc`, `layer`, `kind`, `deg`
+(`in + out`, the number the filter compares), `properties` (the whole list —
+in JSON the same array `get` carries, in text a count) and any `prop:KEY` —
+matched case-insensitively, as the filter matches it — and the value is
+appended as a column, empty where the concept has none. That is the route to
+one property: you do not need `-F json` to read it. It works on `view list`
+too. A field no record has is refused before any row is printed: exit 2 on a
+read, naming the columns the record does have; on a write, where the file has
+already changed, a warning ahead of the row instead, said whatever the flags.
+
+**JSON shapes.** A concept row from `list`, `search` or `query` has no
+`properties` key at all — `jq` prints `null` for a missing key — while `get`
+always carries `properties` as `[{"key","value"}]`; ask a list for
+`--fields …,properties` to get the same array, or `prop:KEY` for one value.
+A relationship reads the same wherever it turns up: `query 'kind=relation'`
+rows and the `relations` nested in `get` both carry `id`, `type`, `name`,
+`source`, `source_name`, `target` and `target_name` — `get` adds `direction`
+and `other_*` for the end that is not the one you asked about.
 
 **A capped answer says so on stderr, and `-q` cannot silence it.** Every list
 is cut to `-l` (50 by default) and prints `showing 50 of 83` when it cuts;
@@ -138,10 +155,17 @@ Never run an unfiltered `list` on an unfamiliar model. Run `amcli stats` first.
 
 ## Addressing concepts
 
-    id:5dde26f7                      an id — always unambiguous, always prefer it
+    id:id-5dde26f7…                  an id — always unambiguous, always prefer it
+    id:5dde26f7                      the hex without `id-`, or a prefix of it (4+ characters)
     "Payment API"                    an exact name
     ApplicationComponent:"Payment"   a name qualified by type
     "*Payment*"                      a glob
+
+Ids in an Archi model are `id-` and thirty-two hex characters; `id:` takes
+the whole thing, the hex alone, or a prefix of it of at least four characters,
+so what you copy off a row resolves whether or not you kept the `id-`. A
+prefix two ids share is exit 4 with both listed. A miss says what ids look like
+in this model. Views take the same three forms.
 
 Filter expressions, quoted as one argument:
 
@@ -194,6 +218,7 @@ another search. On **4**, it lists candidates, each with a ready-to-paste
     amcli element  add ApplicationComponent "Refund Service" --doc "…"
     amcli element  rename id:c40a19b7 "Refunds Service"
     amcli relation add Access "Refunds Service" "Refund Record" --access rw
+    amcli relation add Association "Refunds Service" "Ledger" --name "posts to"
     amcli element  doc id:c40a19b7 "What it is for"
     amcli element  move id:c40a19b7 -f /Application/Payments
     amcli prop set id:c40a19b7 owner team-payments
@@ -205,6 +230,16 @@ the nine folders Archi expects.
 Every write is checked against the ArchiMate relationship matrix first and
 refused (exit 5) if the standard forbids it — and the refusal names what *is*
 permitted between those two types, so read it rather than guessing again.
+
+**A new relationship is drawn on every view that already shows both of its
+ends** — at the prompt and from a batch alike — because a view is a drawing
+of the model and what the model now says between two boxes belongs on the
+line between them. The row's `views` column counts the views it reached and a
+note names them; when one end is drawn somewhere but no view shows both, the
+note says so, and `amcli view add` of the missing end draws it there. `--no-draw`
+(`"no_draw":true` in a batch) adds it to the model only. `--name` puts a label
+on the line — Archi reads an Association as "related to" without one and
+"owns" with it — and `query` and `get` print it as `name`.
 
 Deleting refuses by default when it would take other things with it, and the
 refusal is the impact report. Add `-y` once you have read it.
@@ -265,7 +300,7 @@ mirrors — and never deletes anyone's modelling.
     amcli view list                            # columns are named on stderr
     amcli view create "Refund Flow" -f /Views/Payments
     amcli view auto "Refund Flow" --from "Refund Service" -n 2
-    amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there
+    amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there; a repeat adds nothing
     amcli view layout "Refund Flow" --relayout-all
     amcli view rename "Refund Flow" "Refunds"
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
@@ -277,11 +312,22 @@ mirrors — and never deletes anyone's modelling.
     amcli export views                         # the batch that rebuilds every view
     amcli export mermaid                       # a quick inline diagram for chat
 
+`view add` of a concept already on the view is a no-op with a note — the box
+stays where it is, the row says `added false`, and any relationship it can
+newly draw to what is there is drawn — so a rebuild batch that re-adds every
+member is re-runnable and never leaves a second box for one element.
+
 A view name is unique: creating a second view with a name already in use is exit
 6. Pass `--replace` to overwrite the old one, which is what makes a
 regenerate-everything script re-runnable:
 
     amcli view auto "Refund Flow" --from "Refund Service" --replace
+
+A replace redraws the view; it does not forget what the view said about
+itself. The viewpoint, the documentation and the properties of the view being
+replaced are kept unless the command sets them — `--viewpoint ""` clears the
+viewpoint, and a `view.doc` line later in the batch overwrites the
+documentation as it always did.
 
 A **viewpoint** narrows what a view is meant to say, and Archi shows it in the
 properties. `create` and `auto` take `--viewpoint` (`"viewpoint"` in a batch);
@@ -311,9 +357,10 @@ only way to address two folders that ended up sharing one.
 
 **A view has no declarative form of its own** — what it holds is only geometry
 in the file, so a diff cannot answer "which fifteen elements are on this view".
-`amcli export views` derives one: the batch of `folder.add`, `view.create`,
-`view.add` and `view.layout` operations that rebuilds every view, readable and
-reviewable, which `amcli apply` takes straight back:
+`amcli export views` derives one: the batch of `folder.add`, `view.create`
+(with the `viewpoint` and `folder`), `view.doc`, `view.add` and `view.layout`
+operations that rebuilds every view, readable and reviewable, which `amcli
+apply` takes straight back:
 
     amcli export views -o views.jsonl     # read it, review it, edit it
     amcli apply views.jsonl               # and the model is byte-identical

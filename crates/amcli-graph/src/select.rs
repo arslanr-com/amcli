@@ -14,7 +14,8 @@ use crate::Graph;
 /// A way of addressing concepts.
 #[derive(Clone, Debug)]
 pub enum Selector {
-    /// `id:id-abc…` — exact, always unambiguous.
+    /// `id:id-abc…` — the id as stored, the hex without Archi's `id-`, or a
+    /// unique prefix of either. See [`by_id_or_prefix`].
     Id(String),
     /// `ApplicationComponent:Payment API` — name qualified by type.
     Typed { type_name: String, name: String },
@@ -70,7 +71,9 @@ impl Selector {
     pub fn matches(&self, g: &Graph<'_>) -> Vec<ConceptId> {
         let m = g.model();
         let mut out: Vec<ConceptId> = match self {
-            Selector::Id(id) => m.concept_by_id(id).into_iter().collect(),
+            Selector::Id(id) => {
+                by_id_or_prefix(m.concepts_with_ids().map(|(i, c)| (i, c.id.as_str())), id)
+            }
             Selector::Name(name) => {
                 // Case-sensitive first: an exact spelling should win outright
                 // over a differently-cased twin.
@@ -116,9 +119,10 @@ impl Selector {
     /// forcing the caller into another search.
     fn suggest(&self, g: &Graph<'_>) -> Vec<ConceptId> {
         let needle = match self {
-            Selector::Id(s) | Selector::Name(s) | Selector::Glob(s) => s.to_lowercase(),
+            Selector::Name(s) | Selector::Glob(s) => s.to_lowercase(),
             Selector::Typed { name, .. } => name.to_lowercase(),
-            Selector::Filter(_) => return Vec::new(),
+            // Names near an id are noise, not help.
+            Selector::Id(_) | Selector::Filter(_) => return Vec::new(),
         };
         if needle.is_empty() {
             return Vec::new();
@@ -141,6 +145,53 @@ impl Selector {
         scored.sort_by_key(|(d, c)| (*d, m.concept(*c).name.clone(), *c));
         scored.truncate(5);
         scored.into_iter().map(|(_, c)| c).collect()
+    }
+}
+
+/// The shortest prefix of an id's hex that `id:` accepts.
+///
+/// Four characters is 65,536 values: enough that a prefix an agent copied off a
+/// row is one thing on any real model, and short enough that a clash is
+/// reported as ambiguous with the candidates listed rather than as a wall.
+pub const ID_PREFIX_MIN: usize = 4;
+
+/// Everything `sel` names among `ids`, which are `(handle, id)` pairs.
+///
+/// Archi writes ids as `id-` and thirty-two hex characters; older models
+/// carry eight bare hex characters. A reader who copies the hex off a row
+/// without the `id-`, or the first eight characters of it, meant the same
+/// thing as the whole string, so all three resolve: the id exactly as stored
+/// wins outright; then the hex compared without the prefix on either side;
+/// then, at [`ID_PREFIX_MIN`] characters or more, a prefix of that hex. A
+/// prefix two ids share comes back as both, and the caller reports the
+/// ambiguity the way it reports two elements sharing a name.
+pub fn by_id_or_prefix<'a, T: Copy>(ids: impl Iterator<Item = (T, &'a str)>, sel: &str) -> Vec<T> {
+    fn bare(id: &str) -> String {
+        id.strip_prefix("id-").unwrap_or(id).to_ascii_lowercase()
+    }
+    let want = bare(sel);
+    if want.is_empty() {
+        return Vec::new();
+    }
+    let (mut exact, mut same_hex, mut prefixed) = (Vec::new(), Vec::new(), Vec::new());
+    for (handle, id) in ids {
+        if id == sel {
+            exact.push(handle);
+            continue;
+        }
+        let hex = bare(id);
+        if hex == want {
+            same_hex.push(handle);
+        } else if want.len() >= ID_PREFIX_MIN && hex.starts_with(&want) {
+            prefixed.push(handle);
+        }
+    }
+    if !exact.is_empty() {
+        exact
+    } else if !same_hex.is_empty() {
+        same_hex
+    } else {
+        prefixed
     }
 }
 

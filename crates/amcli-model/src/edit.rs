@@ -137,6 +137,10 @@ impl Model {
     /// Three checks, matching what Archi enforces: the matrix, no duplicate
     /// direct relationship of the same type between the same ordered pair, and
     /// the rule that every relationship touching a junction shares its type.
+    ///
+    /// `name` is the label Archi shows on the line — an Association reads
+    /// "related to" without one and "owns" with it. Most relationships have
+    /// none, and EMF omits the attribute rather than writing it empty.
     pub fn add_relation(
         &mut self,
         ty: RelType,
@@ -144,6 +148,7 @@ impl Model {
         target: ConceptId,
         access_type: Option<i64>,
         documentation: Option<&str>,
+        name: Option<&str>,
     ) -> Result<ConceptId, EditError> {
         self.check_relationship(ty, source, target)?;
         if let Some(a) = access_type
@@ -158,11 +163,13 @@ impl Model {
         let (src_id, tgt_id) = (self.concept(source).id.clone(), self.concept(target).id.clone());
         let id = self.fresh_id(&["relation", ty.info().xsi, &src_id, &tgt_id]);
 
-        let mut b = NodeBuilder::new("element")
-            .attr("xsi:type", ty.info().xsi)
-            .attr("id", &*id)
-            .attr("source", &*src_id)
-            .attr("target", &*tgt_id);
+        // Archi's order: xsi:type, name, id, source, target — the name, when
+        // there is one, sits where it does on an element.
+        let mut b = NodeBuilder::new("element").attr("xsi:type", ty.info().xsi);
+        if let Some(n) = name.filter(|n| !n.is_empty()) {
+            b = b.attr("name", n);
+        }
+        b = b.attr("id", &*id).attr("source", &*src_id).attr("target", &*tgt_id);
         // Archi omits accessType when it equals the schema default of 0
         // (write); writing it explicitly would break byte identity against a
         // file Archi produced.
@@ -291,16 +298,63 @@ impl Model {
             Some(d) => self.doc.set_text(d, text)?,
             None if text.is_empty() => {}
             None => {
-                // Documentation is the first child, ahead of properties, which
-                // is the order Archi writes.
-                self.doc.insert_child(node, 0, NodeBuilder::new("documentation").text(text))?;
+                let at = self.slot_for(node, "documentation");
+                self.doc.insert_child(node, at, NodeBuilder::new("documentation").text(text))?;
             }
         }
         Ok(())
     }
 
+    /// Where a new child of this kind goes among a node's children, in the
+    /// order Archi writes them.
+    ///
+    /// EMF serialises containment in metamodel order, and the metamodel lists
+    /// a view's supertypes as `DiagramModelContainer`, then `Documentable`,
+    /// then `Properties` — so a view's `<documentation>` comes *after* its
+    /// `<child>` objects and before its `<property>` lines, while on a concept
+    /// it comes first, after any `<feature>`. One rank per kind, and a new
+    /// node lands after the last sibling that ranks no higher than it, so
+    /// the file reads the same whether the documentation was written before
+    /// the objects or after them — a batch may do either, and Archi's next
+    /// save would otherwise move the line.
+    fn slot_for(&self, parent: NodeId, kind: &str) -> usize {
+        fn rank(name: &str) -> u8 {
+            match name {
+                "feature" => 0,
+                "documentation" => 2,
+                "property" => 3,
+                // `child`, and anything this build does not know: content.
+                _ => 1,
+            }
+        }
+        let want = rank(kind);
+        self.doc
+            .children(parent)
+            .enumerate()
+            .filter(|(_, c)| rank(self.doc.local_name(*c)) <= want)
+            .map(|(i, _)| i + 1)
+            .last()
+            .unwrap_or(0)
+    }
+
     pub fn set_property(&mut self, c: ConceptId, key: &str, value: &str) -> Result<(), EditError> {
         let node = self.concept(c).node;
+        self.set_property_node(node, key, value)
+    }
+
+    /// Set a property on a view. A view carries properties exactly as a
+    /// concept does; this is what lets `--replace` keep them.
+    pub fn set_view_property(
+        &mut self,
+        view: ViewId,
+        key: &str,
+        value: &str,
+    ) -> Result<(), EditError> {
+        let node = self.view(view).node;
+        self.set_property_node(node, key, value)
+    }
+
+    fn set_property_node(&mut self, node: NodeId, key: &str, value: &str) -> Result<(), EditError> {
         let existing = self
             .doc
             .children(node)
@@ -634,8 +688,12 @@ impl Model {
         let view_id = self.view(view).id.clone();
         let id = self.fresh_id(&["object", &view_id, &concept_id]);
         let view_node = self.view(view).node;
-        let obj = self.doc.append_child(
+        // After the last object, and before the view's documentation and
+        // properties: see `slot_for`.
+        let at = self.slot_for(view_node, "child");
+        let obj = self.doc.insert_child(
             view_node,
+            at,
             NodeBuilder::new("child")
                 .attr("xsi:type", "archimate:DiagramObject")
                 .attr("id", &*id)
@@ -707,6 +765,61 @@ impl Model {
         self.recompute_target_connections(view);
         self.reindex();
         Ok(id)
+    }
+
+    /// Where a relationship could be drawn on a view and is not yet: the
+    /// source and target objects to join. `None` when an end is not on the
+    /// view, or a line already stands for the relationship there.
+    ///
+    /// The first object per concept: a concept may be on a view more than
+    /// once, and one line rather than one per copy is what Archi draws when
+    /// an element is dropped onto a diagram. Every "draw what can be drawn"
+    /// decision — `view add` wiring a new box to what is there, `relation
+    /// add` reaching every view that shows both ends — asks this one question.
+    pub fn undrawn_connection(&self, view: ViewId, rel: ConceptId) -> Option<(String, String)> {
+        let r = self.concept(rel);
+        let (src, tgt) = (r.source.as_deref()?, r.target.as_deref()?);
+        let view_node = self.view(view).node;
+        let (mut src_obj, mut tgt_obj) = (None, None);
+        for n in self.doc.descendants(view_node) {
+            match self.doc.local_name(n) {
+                "child" => {
+                    let Some(shown) = self.doc.attr(n, "archimateElement") else { continue };
+                    if shown == src && src_obj.is_none() {
+                        src_obj = self.doc.attr(n, "id");
+                    }
+                    if shown == tgt && tgt_obj.is_none() {
+                        tgt_obj = self.doc.attr(n, "id");
+                    }
+                }
+                "sourceConnection" => {
+                    if self.doc.attr(n, "archimateRelationship").as_deref() == Some(&r.id) {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some((src_obj?, tgt_obj?))
+    }
+
+    /// Draw a relationship on every view that already shows both of its ends,
+    /// and say which. A view that draws it already is left alone.
+    ///
+    /// A relationship added to the model between two things a drawing shows
+    /// used to reach no drawing: the model held a relationship on no view,
+    /// and only a separate query revealed it. A view is a drawing of the
+    /// model, so what the model now says between two boxes is drawn.
+    pub fn draw_relation_on_views(&mut self, rel: ConceptId) -> Result<Vec<ViewId>, EditError> {
+        let views: Vec<ViewId> = self.views_with_ids().map(|(i, _)| i).collect();
+        let mut drawn = Vec::new();
+        for v in views {
+            if let Some((src, tgt)) = self.undrawn_connection(v, rel) {
+                self.add_view_connection(v, rel, &src, &tgt, &[])?;
+                drawn.push(v);
+            }
+        }
+        Ok(drawn)
     }
 
     /// Move an object already on a view.

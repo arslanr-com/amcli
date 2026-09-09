@@ -22,7 +22,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 
-use amcli_graph::{Graph, Resolution, Selector};
+use amcli_graph::Graph;
 use amcli_model::{ConceptId, ElementType, Model, RelType};
 use serde::Deserialize;
 
@@ -30,8 +30,14 @@ use crate::output::{CliError, Code, Output, Row};
 use crate::view::ViewCmd;
 use crate::write::{Opts, guard_checksum, save};
 
+/// Every operation a batch line may be.
+///
+/// A field this binary does not know is refused, not dropped: `relation.add`
+/// took a `name` for two releases, accepted the line, reported success and
+/// wrote a relationship without one. A dry run said the same. Nothing that
+/// silently writes less than it was asked to belongs in an atomic batch.
 #[derive(Deserialize)]
-#[serde(tag = "op", rename_all = "kebab-case")]
+#[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 enum Op {
     #[serde(rename = "element.add")]
     ElementAdd {
@@ -53,12 +59,15 @@ enum Op {
         ty: String,
         source: String,
         target: String,
+        name: Option<String>,
         access: Option<String>,
         doc: Option<String>,
         #[serde(rename = "ref")]
         reference: Option<String>,
         #[serde(default)]
         if_absent: bool,
+        #[serde(default)]
+        no_draw: bool,
     },
     #[serde(rename = "element.rename")]
     ElementRename { target: String, name: String },
@@ -188,6 +197,18 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
                      document — upgrade it: sh ~/.agents/skills/amcli/scripts/install.sh",
                     crate::VERSION
                 )
+            } else if complaint.starts_with("unknown field") {
+                // A field the op does not take is refused rather than dropped;
+                // the complaint names the ones it does. The same skew applies:
+                // a field the skill documents and this binary lacks is an old
+                // binary, not a typo.
+                format!(
+                    "the operation does not take that field, so the line was refused rather \
+                     than applied without it; references/batch.md lists each operation's \
+                     fields. This amcli is {} — if a skill named that field, upgrade: sh \
+                     ~/.agents/skills/amcli/scripts/install.sh",
+                    crate::VERSION
+                )
             } else {
                 "one JSON operation per line; see references/batch.md".to_string()
             };
@@ -224,7 +245,8 @@ pub fn run(opts: &Opts, m: &mut Model, file: Option<&str>) -> Result<Output, Cli
         .meta_n("applied", applied as i64)
         .meta("checksum_before", before)
         .meta("checksum_after", after)
-        .meta_b("written", !opts.dry_run);
+        .meta_b("written", !opts.dry_run)
+        .wrote(!opts.dry_run);
     if opts.dry_run {
         out = out.note("dry run: nothing was written");
     }
@@ -273,7 +295,17 @@ fn apply_one(
             Ok(Row::new().s("op", "element.add").s("id", id).b("created", created))
         }
 
-        Op::RelationAdd { ty, source, target, access, doc, reference, if_absent } => {
+        Op::RelationAdd {
+            ty,
+            source,
+            target,
+            name,
+            access,
+            doc,
+            reference,
+            if_absent,
+            no_draw,
+        } => {
             let t = RelType::from_str(ty).ok_or_else(|| {
                 CliError::new(Code::Usage, "usage", format!("`{ty}` is not a relationship type"))
             })?;
@@ -290,21 +322,34 @@ fn apply_one(
                     if let Some(r) = reference {
                         refs.insert(r.clone(), existing.clone());
                     }
+                    // Skipped means untouched: the views it is on are the
+                    // ones it was on.
+                    let on = m
+                        .concept_by_id(&existing)
+                        .map(|c| Graph::build(m).views_of(c).len())
+                        .unwrap_or(0);
                     return Ok(Row::new()
                         .s("op", "relation.add")
                         .s("id", existing)
-                        .b("created", false));
+                        .b("created", false)
+                        .n("views", on as i64));
                 }
             }
 
             let c = m
-                .add_relation(t, s, g, a, doc.as_deref())
+                .add_relation(t, s, g, a, doc.as_deref(), name.as_deref())
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
             let id = m.concept(c).id.clone();
             if let Some(r) = reference {
                 refs.insert(r.clone(), id.clone());
             }
-            Ok(Row::new().s("op", "relation.add").s("id", id).b("created", true))
+            // Drawn wherever both ends already are, exactly as at the prompt.
+            let drawn = if *no_draw { Vec::new() } else { crate::write::draw(m, c)? };
+            Ok(Row::new()
+                .s("op", "relation.add")
+                .s("id", id)
+                .b("created", true)
+                .n("views", drawn.len() as i64))
         }
 
         Op::ElementRename { target, name } => {
@@ -560,23 +605,7 @@ fn resolve(m: &Model, sel: &str, refs: &HashMap<String, String>) -> Result<Conce
             )
         });
     }
-    let g = Graph::build(m);
-    match Selector::parse(sel).resolve_one(&g) {
-        Resolution::One(c) => Ok(c),
-        Resolution::Ambiguous(cs) => Err(CliError::new(
-            Code::Ambiguous,
-            "ambiguous",
-            format!("{} concepts match `{sel}`", cs.len()),
-        )
-        .rows(
-            cs.iter()
-                .map(|c| Row::new().s("selector", format!("id:{}", m.concept(*c).id)))
-                .collect(),
-        )),
-        Resolution::NotFound { .. } => {
-            Err(CliError::new(Code::NotFound, "not_found", format!("nothing matches `{sel}`")))
-        }
-    }
+    crate::read::resolve(&Graph::build(m), sel)
 }
 
 fn folder_of(m: &Model, path: &str) -> Result<amcli_model::FolderId, CliError> {

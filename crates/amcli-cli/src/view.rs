@@ -1,6 +1,6 @@
 //! View commands: listing, authoring and rendering.
 
-use amcli_graph::{Dir, EdgeFilter, Graph, Resolution, Selector};
+use amcli_graph::{Dir, EdgeFilter, Graph};
 use amcli_model::{ConceptId, ConceptKind, Model, ViewId, viewpoints};
 use amcli_render::Options;
 use amcli_view::geometry::Rect;
@@ -32,6 +32,7 @@ pub enum ViewCmd {
         replace: bool,
     },
     /// Put a concept on a view, drawing the relationships it brings with it.
+    /// A concept already there is left where it is.
     Add {
         view: String,
         selector: String,
@@ -168,19 +169,36 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
 /// diff is the whole views section every time and two passes never agree.
 type Slot = (amcli_model::FolderId, usize);
 
+/// What `--replace` took away, and what of it the replacement keeps.
+///
+/// A replace is "draw this view again", not "forget everything about it":
+/// the objects and connections are rebuilt, but the viewpoint, the
+/// documentation and the properties are what the view *says* rather than
+/// what it draws, and a batch that names none of them means to leave them.
+/// `export views` round-tripped through a replace used to delete every
+/// view's documentation, and said nothing.
+#[derive(Default)]
+struct Replaced {
+    ids: Vec<String>,
+    slot: Option<Slot>,
+    viewpoint: String,
+    documentation: Option<String>,
+    properties: Vec<(String, String)>,
+}
+
 fn claim_name(
     m: &mut Model,
     name: &str,
     except: Option<ViewId>,
     replace: bool,
-) -> Result<(Vec<String>, Option<Slot>), CliError> {
+) -> Result<Replaced, CliError> {
     let clash: Vec<ViewId> = m
         .views_with_ids()
         .filter(|(i, v)| v.name == name && Some(*i) != except)
         .map(|(i, _)| i)
         .collect();
     if clash.is_empty() {
-        return Ok((Vec::new(), None));
+        return Ok(Replaced::default());
     }
     if !replace {
         return Err(CliError::new(
@@ -201,29 +219,66 @@ fn claim_name(
         ));
     }
 
-    // The first clash's position is the one worth keeping: it is the view the
-    // caller is regenerating. Read it before the delete, when it still exists.
-    let slot = clash.first().and_then(|v| m.view_position(*v));
+    // The first clash is the view the caller is regenerating: its position,
+    // and what it said about itself, are read before the delete.
+    let first = clash[0];
+    let kept = Replaced {
+        ids: Vec::new(),
+        slot: m.view_position(first),
+        viewpoint: m.view(first).viewpoint.clone(),
+        documentation: m.documentation(m.view(first).node).filter(|d| !d.is_empty()),
+        properties: m.properties(m.view(first).node),
+    };
 
-    let mut replaced = Vec::new();
+    let mut ids = Vec::new();
     for v in clash {
         let id = m.view(v).id.clone();
         m.delete_view(v).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
-        replaced.push(id);
+        ids.push(id);
     }
-    Ok((replaced, slot))
+    Ok(Replaced { ids, ..kept })
 }
 
-/// Put a freshly made view back where the one it replaced was.
-fn reseat(m: &mut Model, v: ViewId, slot: Option<Slot>) {
-    if let Some((folder, at)) = slot {
+/// Put a freshly made view back where the one it replaced was, saying what
+/// it said.
+///
+/// The viewpoint is the caller's when given — `""` clears it — and the
+/// replaced view's otherwise. Documentation and properties are copied whole;
+/// a `view.doc` line later in the batch overwrites them as it always did.
+fn reseat(m: &mut Model, v: ViewId, kept: &Replaced) -> Result<(), CliError> {
+    let invalid =
+        |e: amcli_model::EditError| CliError::new(Code::Invalid, "invalid", e.to_string());
+    if let Some((folder, at)) = kept.slot {
         m.place_view_at(v, folder, at);
+    }
+    if let Some(doc) = &kept.documentation {
+        m.set_view_documentation(v, doc).map_err(invalid)?;
+    }
+    for (k, val) in &kept.properties {
+        m.set_view_property(v, k, val).map_err(invalid)?;
+    }
+    Ok(())
+}
+
+/// The viewpoint a created view gets: the one asked for, else the one the
+/// view it replaces had. An explicit empty string is "none", not "keep".
+fn viewpoint_for<'a>(asked: Option<&'a str>, kept: &'a Replaced) -> Option<&'a str> {
+    match asked {
+        Some(v) => Some(v).filter(|v| !v.is_empty()),
+        None => Some(kept.viewpoint.as_str()).filter(|v| !v.is_empty()),
     }
 }
 
 fn find_view(m: &Model, sel: &str) -> Result<ViewId, CliError> {
-    if let Some(id) = sel.strip_prefix("id:").and_then(|i| m.view_by_id(i)) {
-        return Ok(id);
+    // `id:` takes the same three spellings it does for a concept.
+    if let Some(id) = sel.strip_prefix("id:") {
+        let found = amcli_graph::select::by_id_or_prefix(
+            m.views_with_ids().map(|(i, v)| (i, v.id.as_str())),
+            id,
+        );
+        if let [one] = found.as_slice() {
+            return Ok(*one);
+        }
     }
     let matches: Vec<(ViewId, String)> = m
         .views_with_ids()
@@ -295,19 +350,20 @@ fn create(
     // Resolved before anything is created, so a misspelt folder leaves no
     // half-made view behind.
     let dest = folder.map(|f| views_folder(m, f)).transpose()?;
-    let (replaced, slot) = claim_name(m, name, None, replace)?;
-    let v =
-        m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let kept = claim_name(m, name, None, replace)?;
+    let v = m
+        .add_view(name, viewpoint_for(vp, &kept))
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     if let Some(f) = dest {
         m.move_view_to_folder(v, f)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
-    reseat(m, v, slot);
+    reseat(m, v, &kept)?;
     let row = Row::new()
         .s("id", m.view(v).id.clone())
         .s("name", name.to_string())
         .s("folder", m.folder(m.view(v).folder).path.clone())
-        .n("replaced", replaced.len() as i64)
+        .n("replaced", kept.ids.len() as i64)
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }
@@ -468,28 +524,12 @@ fn finish(opts: &Opts, m: &Model, row: Row) -> Result<Output, CliError> {
     if !opts.dry_run {
         crate::write::save(m)?;
     }
-    let out = Output::one(row);
+    let out = Output::one(row).wrote(!opts.dry_run);
     Ok(if opts.dry_run { out.note("dry run: nothing was written") } else { out })
 }
 
 fn resolve(m: &Model, sel: &str) -> Result<ConceptId, CliError> {
-    let g = Graph::build(m);
-    match Selector::parse(sel).resolve_one(&g) {
-        Resolution::One(c) => Ok(c),
-        Resolution::Ambiguous(cs) => Err(CliError::new(
-            Code::Ambiguous,
-            "ambiguous",
-            format!("{} concepts match `{sel}`", cs.len()),
-        )
-        .rows(
-            cs.iter()
-                .map(|c| Row::new().s("selector", format!("id:{}", m.concept(*c).id)))
-                .collect(),
-        )),
-        Resolution::NotFound { .. } => {
-            Err(CliError::new(Code::NotFound, "not_found", format!("nothing matches `{sel}`")))
-        }
-    }
+    crate::read::resolve(&Graph::build(m), sel)
 }
 
 /// Warn rather than refuse when a concept is outside the view's viewpoint.
@@ -519,42 +559,19 @@ fn induced_connections(
     objects: &[ConceptId],
 ) -> Vec<(ConceptId, String, String)> {
     let g = Graph::build(m);
-
-    // First object per concept. A concept may appear on a view more than once;
-    // drawing one line rather than one per copy is what Archi does when you drop
-    // an element onto a diagram.
-    let mut object_of: std::collections::HashMap<String, String> = Default::default();
-    for (object, concept) in m.view_objects(v) {
-        if let Some(concept) = concept {
-            object_of.entry(concept).or_insert(object);
-        }
-    }
-
-    // Relationships already drawn here, so re-running is a no-op.
-    let drawn: std::collections::HashSet<String> = m
-        .doc
-        .descendants(m.view(v).node)
-        .into_iter()
-        .filter_map(|n| m.doc.attr(n, "archimateRelationship"))
-        .collect();
-
     let mut out: Vec<(ConceptId, String, String)> = Vec::new();
-    let mut seen: std::collections::HashSet<String> = Default::default();
+    let mut seen: std::collections::HashSet<ConceptId> = Default::default();
     for c in objects {
         for arc in g.neighbors(*c, Dir::Both, &EdgeFilter::default()) {
-            let rel = m.concept(arc.rel);
-            if drawn.contains(&rel.id) || !seen.insert(rel.id.clone()) {
+            if !seen.insert(arc.rel) {
                 continue;
             }
-            // The connection's ends are the *objects*, and which is source is
-            // the relationship's business, not the traversal's.
-            let Some((s, t)) = g.ends(arc.rel) else { continue };
-            let (Some(src), Some(tgt)) =
-                (object_of.get(&m.concept(s).id), object_of.get(&m.concept(t).id))
-            else {
-                continue;
-            };
-            out.push((arc.rel, src.clone(), tgt.clone()));
+            // Which object is the source is the relationship's business, not
+            // the traversal's; the model answers with the ends in its order,
+            // or with nothing when the line is already there.
+            if let Some((src, tgt)) = m.undrawn_connection(v, arc.rel) {
+                out.push((arc.rel, src, tgt));
+            }
         }
     }
     out
@@ -574,21 +591,36 @@ fn add(
     let c = resolve(m, sel)?;
     let note = viewpoint_note(m, v, c);
 
-    let (w, h) = match &m.concept(c).kind {
-        ConceptKind::Element(e) => e.info().default_wh,
-        _ => (120, 55),
+    let scene = amcli_view::compile(m, v);
+    // A concept already on the view stays as it is: a second box for the
+    // same element is what a re-run "refresh" used to leave behind, and
+    // nothing flagged it. The relationships it can draw are still drawn, so
+    // adding a present member is how a view catches up with the model.
+    let present = scene
+        .nodes
+        .iter()
+        .find(|n| n.concept_id.as_deref() == Some(m.concept(c).id.as_str()))
+        .map(|n| (n.id.clone(), n.abs));
+    let (id, slot, added) = match present {
+        Some((id, rect)) => (id, rect, false),
+        None => {
+            let (w, h) = match &m.concept(c).kind {
+                ConceptKind::Element(e) => e.info().default_wh,
+                _ => (120, 55),
+            };
+            // Placed clear of everything already there, so adding one object
+            // never disturbs the rest of the diagram.
+            let taken: Vec<Rect> = scene.nodes.iter().map(|n| n.abs).collect();
+            let slot = match (x, y) {
+                (Some(x), Some(y)) => Rect { x, y, w, h },
+                _ => free_slot(&taken, w, h),
+            };
+            let id = m
+                .add_view_object(v, c, slot.x, slot.y, slot.w, slot.h)
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+            (id, slot, true)
+        }
     };
-    // Placed clear of everything already there, so adding one object never
-    // disturbs the rest of the diagram.
-    let taken: Vec<Rect> = amcli_view::compile(m, v).nodes.iter().map(|n| n.abs).collect();
-    let slot = match (x, y) {
-        (Some(x), Some(y)) => Rect { x, y, w, h },
-        _ => free_slot(&taken, w, h),
-    };
-
-    let id = m
-        .add_view_object(v, c, slot.x, slot.y, slot.w, slot.h)
-        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
 
     // Gather, then mutate: the graph borrows the model.
     let wire = if connect { induced_connections(m, v, &[c]) } else { Vec::new() };
@@ -605,11 +637,17 @@ fn add(
         .n("x", slot.x as i64)
         .n("y", slot.y as i64)
         .n("connections", drawn)
+        .b("added", added)
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
     let out = match note {
         Some(n) => out.note(n),
         None => out,
+    };
+    let out = if added {
+        out
+    } else {
+        out.note(format!("`{}` is already on the view; nothing was added", m.concept(c).name))
     };
     Ok(if drawn > 0 {
         out.note(format!(
@@ -641,21 +679,12 @@ fn auto(
         CliError::new(Code::Usage, "usage", format!("`{dir}` is not a direction"))
             .hint("one of: out, in, both")
     })?;
-    let (replaced, slot) = claim_name(m, name, None, replace)?;
+    let kept = claim_name(m, name, None, replace)?;
 
     // Gather first, mutate second: the graph borrows the model.
     let (items, edges, concepts, rels) = {
         let g = Graph::build(m);
-        let root = match Selector::parse(from).resolve_one(&g) {
-            Resolution::One(c) => c,
-            _ => {
-                return Err(CliError::new(
-                    Code::NotFound,
-                    "not_found",
-                    format!("nothing matches `{from}`"),
-                ));
-            }
-        };
+        let root = crate::read::resolve(&g, from)?;
         let sub = g.k_hop(&[root], depth, dir, &EdgeFilter::default(), 500);
         let concepts: Vec<ConceptId> = sub.nodes.iter().map(|(c, _)| *c).collect();
 
@@ -693,13 +722,14 @@ fn auto(
     }
 
     let placed = place(&items, &edges, algo);
-    let v =
-        m.add_view(name, vp).map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let v = m
+        .add_view(name, viewpoint_for(vp, &kept))
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     if let Some(f) = dest {
         m.move_view_to_folder(v, f)
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
-    reseat(m, v, slot);
+    reseat(m, v, &kept)?;
 
     let mut object_ids = Vec::with_capacity(concepts.len());
     for (c, r) in concepts.iter().zip(placed.rects.iter()) {
@@ -727,7 +757,7 @@ fn auto(
         // Which algorithm ran, because under `auto` it may not be the one the
         // caller would have guessed.
         .s("algorithm", placed.algorithm.as_str())
-        .n("replaced", replaced.len() as i64)
+        .n("replaced", kept.ids.len() as i64)
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
     Ok(fallback_note(out, algo, placed.algorithm))

@@ -263,6 +263,14 @@ The refresh procedure is in the header of PROVENANCE.toml itself.
   `DiagramModelGroup` → `Group`, `DiagramModelNote` → `Note`, and the root
   `ArchimateModel` → `model`.
 - `documentation` and `purpose` are child *elements*, not attributes.
+- **EMF writes a node's children in metamodel order, and a view's is not a
+  concept's.** `DiagramModel` lists `DiagramModelContainer` before
+  `Documentable` before `Properties`, so a view's `<documentation>` comes
+  *after* its `<child>` objects and before its `<property>` lines; on a
+  concept it comes first, after any `<feature>`. `slot_for` in `edit.rs` is
+  the one place that knows this, and every insertion into a concept or view
+  node goes through it — a documentation written at index 0 of a view is a
+  line Archi's next save moves, and a round trip that is not byte-identical.
 - `AccessRelationship/@accessType`: **0 is Write**, 1 Read, 2 Unspecified,
   3 Read/Write. The obvious guess is wrong.
 - `<bounds>` is a child element. `x`/`y` are parent-relative and may be negative;
@@ -299,6 +307,15 @@ a command.
   header and the notes. Every capped list goes through `read::capped`; four
   commands used to truncate in silence, and a count taken from fifty of
   eighty-three rows is not a smaller answer but a wrong one.
+
+- **A bad `--fields` fails a read and only warns on a write.** `Output::wrote`
+  is what tells them apart: an exit 2 after `element add` has landed reads as
+  "the write failed", and the retry adds the element twice. On a read nothing
+  is printed under a wrong projection; on a write the warning goes ahead of
+  the row, whatever the flags.
+- **There is one resolver**, `read::resolve`, for reads and writes alike.
+  There were four, and they answered a miss four ways — one sent a reader who
+  had typed an id to `amcli search`.
 
 ## Two process-wide things, and what they cost
 

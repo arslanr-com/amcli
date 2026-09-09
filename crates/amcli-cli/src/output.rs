@@ -172,6 +172,11 @@ pub struct Output {
     /// the one command that keeps running after it has answered, and its
     /// answer — the URL — has to be out before it starts serving.
     pub then: Option<Box<dyn FnOnce() + Send>>,
+    /// True once the file on disk has been changed by this command. It decides
+    /// what a bad `--fields` may do: fail the command, or only warn — a
+    /// failure reported after a write landed reads as "the write failed", and
+    /// the retry that follows adds the element twice.
+    pub wrote: bool,
 }
 
 impl Output {
@@ -216,6 +221,11 @@ impl Output {
         self.exit = Some(code);
         self
     }
+
+    pub fn wrote(mut self, wrote: bool) -> Output {
+        self.wrote = wrote;
+        self
+    }
 }
 
 pub struct Printer {
@@ -226,14 +236,23 @@ pub struct Printer {
 }
 
 impl Printer {
+    /// The `--fields` names no record of this answer carries, as one
+    /// complaint, or `None` when every asked-for column is there.
+    ///
+    /// Asked before anything is printed: the miss used to be a note, which
+    /// came after the rows in text and not at all under `-q`, so
+    /// `--fields name,deg` printed a column short and either said so under a
+    /// screenful of output or never. `main` turns the answer into a usage
+    /// error on a read and a warning ahead of the rows on a write.
+    pub fn unknown_fields(&self, out: &Output) -> Option<String> {
+        if self.count_only {
+            return None;
+        }
+        unmatched_fields(&out.rows, self.fields.as_deref()?)
+    }
+
     pub fn print(&self, mut out: Output, stdout: &mut impl Write, stderr: &mut impl Write) {
         if let Some(f) = &self.fields {
-            // A field spelled wrongly used to project to nothing and say nothing,
-            // so `--fields name,view` printed an empty column and read as "this
-            // model has no view information". Name the miss and the alternatives.
-            if let Some(note) = unmatched_fields(&out.rows, f) {
-                out.notes.push(note);
-            }
             for r in &mut out.rows {
                 r.project(f);
             }

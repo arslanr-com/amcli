@@ -58,6 +58,12 @@ pub fn run(g: &Graph<'_>, format: &str, out_path: Option<&str>) -> Result<Output
 /// Only what `view.add` can put back is emitted. Notes, groups, nested objects
 /// and references to other views are counted in a comment rather than silently
 /// dropped, because a spec that looks complete and is not is worse than none.
+///
+/// What a view says about itself travels too: the viewpoint on `view.create`
+/// and the documentation as a `view.doc` line — an export without the latter
+/// applied through `replace` deleted every view's documentation and called
+/// the result byte-identical. Properties need no line, because a replace
+/// keeps them.
 fn views(m: &Model) -> String {
     // A name is the readable target, but only when it belongs to one concept;
     // otherwise the id, which is always right and occasionally unreadable.
@@ -108,6 +114,13 @@ fn views(m: &Model) -> String {
         create.push_str(",\"replace\":true}");
         s.push_str(&create);
         s.push('\n');
+        if let Some(doc) = m.documentation(v.node).filter(|d| !d.is_empty()) {
+            s.push_str(&format!(
+                "{{\"op\":\"view.doc\",\"view\":{},\"text\":{}}}\n",
+                json_str(&v.name),
+                json_str(&doc)
+            ));
+        }
 
         let mut skipped = 0;
         for (_, concept) in m.view_objects(id) {
