@@ -792,10 +792,10 @@ impl Model {
                         tgt_obj = self.doc.attr(n, "id");
                     }
                 }
-                "sourceConnection" => {
-                    if self.doc.attr(n, "archimateRelationship").as_deref() == Some(&r.id) {
-                        return None;
-                    }
+                "sourceConnection"
+                    if self.doc.attr(n, "archimateRelationship").as_deref() == Some(&r.id) =>
+                {
+                    return None;
                 }
                 _ => {}
             }
