@@ -104,8 +104,10 @@ fn archi_font_strings_parse_and_garbage_does_not() {
     );
     assert_eq!(
         Font::parse("1|Segoe UI|9.0|3|WINDOWS|1|"),
-        Some(Font { size: 9.0, bold: true, italic: true })
+        Some(Font { size: 12.0, bold: true, italic: true }),
+        "a Windows point is four thirds of a pixel"
     );
+    assert_eq!(Font::parse("1|Sans|9.0|0|GTK|1|").map(|f| f.size), Some(12.0));
     assert_eq!(Font::parse("1|Arial|0|0|"), None);
     assert_eq!(Font::parse("Arial"), None);
     assert_eq!(Font::parse(""), None);

@@ -28,7 +28,9 @@ pub struct Options {
     /// Multiplies the pixel size; the viewBox is untouched, so this is purely a
     /// resolution knob.
     pub scale: f64,
-    /// Point size for labels.
+    /// Pixel size for labels that carry no font of their own. Twelve is what
+    /// Archi draws by default on every platform — Lucida Grande 12 on a Mac,
+    /// Segoe UI 9 at 96 dpi on Windows — and what the layout sizes boxes for.
     pub font_size: f64,
     /// Emit `width`/`height`, so the file has an intrinsic size in a browser.
     pub sized: bool,
@@ -38,7 +40,7 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { margin: 10, scale: 1.0, font_size: 9.0, sized: true, icons: true }
+        Options { margin: 10, scale: 1.0, font_size: 12.0, sized: true, icons: true }
     }
 }
 

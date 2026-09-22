@@ -75,10 +75,15 @@ pub struct Node {
 
 /// A font as Archi stores it on an object: `1|Arial|19.0|1|COCOA|1|` is
 /// version, face, height in points, SWT style (1 bold, 2 italic, 3 both),
-/// platform, and a flag. Only the size and the style matter to a drawing;
-/// the face is whatever the machine has.
+/// the platform it was set on, and a flag. Only the size and the style
+/// matter to a drawing; the face is whatever the machine has.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Font {
+    /// Height in drawing pixels — what the author saw. Archi stores points,
+    /// and a point is a pixel on macOS (72 dpi) but four thirds of one on
+    /// Windows and GTK (96 dpi): Segoe UI 9 on Windows and Lucida Grande 12
+    /// on a Mac are the same twelve pixels, which is also Archi's default
+    /// on both. The platform field says which arithmetic applies.
     pub size: f64,
     pub bold: bool,
     pub italic: bool,
@@ -90,8 +95,13 @@ impl Font {
         let mut parts = s.split('|');
         let _version = parts.next()?;
         let _face = parts.next()?;
-        let size: f64 = parts.next()?.trim().parse().ok()?;
+        let points: f64 = parts.next()?.trim().parse().ok()?;
         let style: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let platform = parts.next().unwrap_or("").trim().to_ascii_uppercase();
+        let size = match platform.as_str() {
+            "WINDOWS" | "GTK" | "WIN32" => (points * 96.0 / 72.0).round(),
+            _ => points,
+        };
         (size > 0.0).then_some(Font { size, bold: style & 1 != 0, italic: style & 2 != 0 })
     }
 }
