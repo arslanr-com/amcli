@@ -36,6 +36,8 @@ use crate::write::{Opts, guard_checksum, save};
 /// took a `name` for two releases, accepted the line, reported success and
 /// wrote a relationship without one. A dry run said the same. Nothing that
 /// silently writes less than it was asked to belongs in an atomic batch.
+// A command is built once per run; boxing its largest variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Deserialize)]
 #[serde(tag = "op", rename_all = "kebab-case", deny_unknown_fields)]
 enum Op {
@@ -117,8 +119,17 @@ enum Op {
         into: Option<String>,
         x: Option<i32>,
         y: Option<i32>,
+        width: Option<i32>,
+        height: Option<i32>,
         #[serde(default)]
         no_connect: bool,
+        /// A second box for a concept the view already shows.
+        #[serde(default)]
+        again: bool,
+        /// Binds the box's object id, so a later `view.style`, `view.route`
+        /// or `into` can name it.
+        #[serde(rename = "ref")]
+        reference: Option<String>,
     },
     #[serde(rename = "view.group")]
     ViewGroup {
@@ -140,6 +151,45 @@ enum Op {
         into: Option<String>,
         x: Option<i32>,
         y: Option<i32>,
+        width: Option<i32>,
+        height: Option<i32>,
+        #[serde(rename = "ref")]
+        reference: Option<String>,
+    },
+    #[serde(rename = "view.style")]
+    ViewStyle {
+        view: String,
+        target: String,
+        fill: Option<String>,
+        line: Option<String>,
+        line_width: Option<String>,
+        font_size: Option<String>,
+        font_face: Option<String>,
+        font_style: Option<String>,
+        font: Option<String>,
+        font_color: Option<String>,
+        text_align: Option<String>,
+        text_position: Option<String>,
+        border: Option<String>,
+        alpha: Option<String>,
+        line_alpha: Option<String>,
+        label: Option<String>,
+        icon: Option<String>,
+    },
+    #[serde(rename = "view.route")]
+    ViewRoute {
+        view: String,
+        target: String,
+        /// Absolute canvas points; empty straightens the line.
+        #[serde(default)]
+        points: Vec<[i32; 2]>,
+    },
+    #[serde(rename = "view.connect")]
+    ViewConnect {
+        view: String,
+        source: String,
+        target: String,
+        relationship: Option<String>,
         #[serde(rename = "ref")]
         reference: Option<String>,
     },
@@ -438,10 +488,10 @@ fn apply_one(
                 replace: *replace,
             },
         ),
-        Op::ViewAdd { view, target, into, x, y, no_connect } => {
+        Op::ViewAdd { view, target, into, x, y, width, height, no_connect, again, reference } => {
             let selector = deref(m, refs, target)?;
             let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
-            view_op(
+            let row = view_op(
                 opts,
                 m,
                 "view.add",
@@ -451,9 +501,14 @@ fn apply_one(
                     into,
                     x: *x,
                     y: *y,
+                    width: *width,
+                    height: *height,
                     no_connect: *no_connect,
+                    again: *again,
                 },
-            )
+            )?;
+            bind_object(refs, reference.as_deref(), &row);
+            Ok(row)
         }
         Op::ViewGroup { view, name, into, x, y, width, height, reference } => {
             let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
@@ -474,7 +529,7 @@ fn apply_one(
             bind_object(refs, reference.as_deref(), &row);
             Ok(row)
         }
-        Op::ViewNote { view, text, into, x, y, reference } => {
+        Op::ViewNote { view, text, into, x, y, width, height, reference } => {
             let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
             let row = view_op(
                 opts,
@@ -486,8 +541,73 @@ fn apply_one(
                     into,
                     x: *x,
                     y: *y,
+                    width: *width,
+                    height: *height,
                     object: None,
                 },
+            )?;
+            bind_object(refs, reference.as_deref(), &row);
+            Ok(row)
+        }
+        Op::ViewStyle {
+            view,
+            target,
+            fill,
+            line,
+            line_width,
+            font_size,
+            font_face,
+            font_style,
+            font,
+            font_color,
+            text_align,
+            text_position,
+            border,
+            alpha,
+            line_alpha,
+            label,
+            icon,
+        } => {
+            let target = deref_object(refs, target)?;
+            let deferred = Opts { dry_run: true, yes: opts.yes, expect_checksum: None };
+            let flags = crate::view::StyleFlags {
+                fill: fill.clone(),
+                line: line.clone(),
+                line_width: line_width.clone(),
+                font_size: font_size.clone(),
+                font_face: font_face.clone(),
+                font_style: font_style.clone(),
+                font: font.clone(),
+                font_color: font_color.clone(),
+                text_align: text_align.clone(),
+                text_position: text_position.clone(),
+                border: border.clone(),
+                alpha: alpha.clone(),
+                line_alpha: line_alpha.clone(),
+                label: label.clone(),
+                icon: icon.clone(),
+            };
+            let out = crate::view::style(&deferred, m, view, &target, flags)?;
+            let n = out.rows.len();
+            Ok(Row::new().s("op", "view.style").s("target", target).n("styled", n as i64))
+        }
+        Op::ViewRoute { view, target, points } => {
+            let target = deref_object(refs, target)?;
+            let deferred = Opts { dry_run: true, yes: opts.yes, expect_checksum: None };
+            let pts: Vec<String> = points.iter().map(|[x, y]| format!("{x},{y}")).collect();
+            let out = crate::view::route(&deferred, m, view, &target, &pts)?;
+            let n = out.rows.len();
+            Ok(Row::new().s("op", "view.route").s("target", target).n("routed", n as i64))
+        }
+        Op::ViewConnect { view, source, target, relationship, reference } => {
+            let source = deref_object(refs, source)?;
+            let target = deref_object(refs, target)?;
+            let relationship = relationship.as_deref().map(|r| deref(m, refs, r)).transpose()?;
+            let row = view_op(
+                opts,
+                m,
+                "view.connect",
+                ViewCmd::Connect { view: view.clone(), source, target, relationship },
             )?;
             bind_object(refs, reference.as_deref(), &row);
             Ok(row)

@@ -106,7 +106,7 @@ fn views(m: &Model) -> String {
     // Group refs are numbered across the whole batch: a ref is bound for the
     // batch, and two views reusing `g1` would have the second's objects
     // nested in the first's group.
-    let group_count = &mut 0usize;
+    let object_count = &mut 0usize;
     for (id, folder) in ordered {
         let v = m.view(id);
         s.push('\n');
@@ -130,16 +130,36 @@ fn views(m: &Model) -> String {
             ));
         }
 
-        // How each object is named when something nested in it says `into`:
-        // a box by its concept, a group by the `ref` its own line bound.
-        // Objects `apply` cannot rebuild have no name, and what they hold is
-        // rebuilt at the top of the view rather than lost.
+        // A view someone styled by hand — fonts, colours, borders, label
+        // expressions, routed lines — is exported as they drew it: every
+        // box with its bounds, every line named one by one, no layout. A
+        // plain view is its members and a layout.
+        let styled = is_styled(m, id);
+        // How each object is named when something nested in it says `into`
+        // or a style line names it: every object gets a `ref`, because a
+        // concept drawn twice on a poster cannot be told apart by name.
         let mut handle: HashMap<String, String> = HashMap::new();
+        let mut seen_concepts: std::collections::HashSet<String> = Default::default();
         let mut skipped = 0;
         for obj in m.view_tree(id) {
             let into = obj.parent.as_deref().and_then(|p| handle.get(p)).cloned();
             let into_field =
                 into.map(|i| format!(",\"into\":{}", json_str(&i))).unwrap_or_default();
+            let geometry = if styled {
+                let (x, y, w, h) = m.view_object_bounds(id, &obj.id).unwrap_or((0, 0, -1, -1));
+                let mut g = format!(",\"x\":{x},\"y\":{y}");
+                if w >= 0 {
+                    g.push_str(&format!(",\"width\":{w}"));
+                }
+                if h >= 0 {
+                    g.push_str(&format!(",\"height\":{h}"));
+                }
+                g
+            } else {
+                String::new()
+            };
+            *object_count += 1;
+            let reference = format!("o{object_count}");
             match obj.kind.as_str() {
                 "DiagramObject" => {
                     let Some(c) = obj.concept.as_deref().and_then(|c| m.concept_by_id(c)) else {
@@ -152,18 +172,27 @@ fn views(m: &Model) -> String {
                     } else {
                         format!("id:{}", c.id)
                     };
+                    let again =
+                        if seen_concepts.insert(c.id.clone()) { "" } else { ",\"again\":true" };
+                    let no_connect = if styled { ",\"no_connect\":true" } else { "" };
+                    let reference_field = if styled {
+                        format!(",\"ref\":{}", json_str(&reference))
+                    } else {
+                        String::new()
+                    };
                     s.push_str(&format!(
-                        "{{\"op\":\"view.add\",\"view\":{},\"target\":{}{into_field}}}\n",
+                        "{{\"op\":\"view.add\",\"view\":{},\"target\":{}{into_field}{geometry}{again}{no_connect}{reference_field}}}\n",
                         json_str(&v.name),
                         json_str(&target)
                     ));
-                    handle.insert(obj.id.clone(), target);
+                    handle.insert(
+                        obj.id.clone(),
+                        if styled { format!("ref:{reference}") } else { target },
+                    );
                 }
                 "Group" => {
-                    *group_count += 1;
-                    let reference = format!("g{group_count}");
                     s.push_str(&format!(
-                        "{{\"op\":\"view.group\",\"view\":{},\"name\":{},\"ref\":{}{into_field}}}\n",
+                        "{{\"op\":\"view.group\",\"view\":{},\"name\":{},\"ref\":{}{into_field}{geometry}}}\n",
                         json_str(&v.name),
                         json_str(&obj.text),
                         json_str(&reference)
@@ -171,19 +200,88 @@ fn views(m: &Model) -> String {
                     handle.insert(obj.id.clone(), format!("ref:{reference}"));
                 }
                 "Note" => {
+                    let reference_field = if styled {
+                        format!(",\"ref\":{}", json_str(&reference))
+                    } else {
+                        String::new()
+                    };
                     s.push_str(&format!(
-                        "{{\"op\":\"view.note\",\"view\":{},\"text\":{}{into_field}}}\n",
+                        "{{\"op\":\"view.note\",\"view\":{},\"text\":{}{into_field}{geometry}{reference_field}}}\n",
                         json_str(&v.name),
                         json_str(&obj.text)
                     ));
+                    handle.insert(obj.id.clone(), format!("ref:{reference}"));
                 }
                 _ => skipped += 1,
             }
+            if styled && let Some(h) = handle.get(&obj.id) {
+                push_style(&mut s, m, id, &v.name, &obj.id, h);
+            }
         }
-        s.push_str(&format!(
-            "{{\"op\":\"view.layout\",\"view\":{},\"relayout_all\":true}}\n",
-            json_str(&v.name)
-        ));
+        if styled {
+            // Every line, named one by one, in the relationship's direction,
+            // with its style and its route.
+            let scene = amcli_view::compile(m, id);
+            for (conn_id, src, tgt) in m.view_connections(id) {
+                let (Some(from), Some(to)) = (handle.get(&src), handle.get(&tgt)) else {
+                    skipped += 1;
+                    continue;
+                };
+                let rel = match m.visual(id, &conn_id) {
+                    Ok(amcli_model::Visual::Connection(n)) => {
+                        m.doc.attr(n, "archimateRelationship")
+                    }
+                    _ => None,
+                };
+                let Some(rel) = rel else {
+                    skipped += 1;
+                    continue;
+                };
+                *object_count += 1;
+                let reference = format!("c{object_count}");
+                s.push_str(&format!(
+                    "{{\"op\":\"view.connect\",\"view\":{},\"source\":{},\"target\":{},\"relationship\":{},\"ref\":{}}}\n",
+                    json_str(&v.name),
+                    json_str(from),
+                    json_str(to),
+                    json_str(&format!("id:{rel}")),
+                    json_str(&reference)
+                ));
+                let h = format!("ref:{reference}");
+                push_style(&mut s, m, id, &v.name, &conn_id, &h);
+                let bends = m.view_connection_bendpoints(id, &conn_id).unwrap_or_default();
+                if !bends.is_empty() {
+                    let rect = |o: &str| scene.nodes.iter().find(|n| n.id == o).map(|n| n.abs);
+                    if let (Some(sb), Some(tb)) = (rect(&src), rect(&tgt)) {
+                        let bp: Vec<amcli_view::Bendpoint> = bends
+                            .iter()
+                            .map(|(a, b, c, d)| amcli_view::Bendpoint {
+                                start_x: *a,
+                                start_y: *b,
+                                end_x: *c,
+                                end_y: *d,
+                            })
+                            .collect();
+                        let pts = amcli_view::geometry::route(sb, tb, &bp);
+                        let inner: Vec<String> = pts[1..pts.len() - 1]
+                            .iter()
+                            .map(|p| format!("[{},{}]", p.x, p.y))
+                            .collect();
+                        s.push_str(&format!(
+                            "{{\"op\":\"view.route\",\"view\":{},\"target\":{},\"points\":[{}]}}\n",
+                            json_str(&v.name),
+                            json_str(&h),
+                            inner.join(",")
+                        ));
+                    }
+                }
+            }
+        } else {
+            s.push_str(&format!(
+                "{{\"op\":\"view.layout\",\"view\":{},\"relayout_all\":true}}\n",
+                json_str(&v.name)
+            ));
+        }
         if skipped > 0 {
             s.push_str(&format!(
                 "# {skipped} object(s) on this view are references to other views, images or \
@@ -221,6 +319,52 @@ fn walk_views(
             _ => {}
         }
     }
+}
+
+/// Whether anyone styled this view by hand: a font, a colour, a border, a
+/// label expression, a hidden icon or a routed line anywhere on it.
+fn is_styled(m: &Model, v: ViewId) -> bool {
+    let objects = m.view_tree(v);
+    let any_style = |id: &str| {
+        m.visual_style(v, id).map(|st| st != amcli_model::StyleChange::default()).unwrap_or(false)
+    };
+    objects.iter().any(|o| any_style(&o.id))
+        || m.view_connections(v).iter().any(|(c, _, _)| {
+            any_style(c)
+                || m.view_connection_bendpoints(v, c).map(|b| !b.is_empty()).unwrap_or(false)
+        })
+}
+
+/// A `view.style` line for a visual, when it carries any style at all.
+fn push_style(s: &mut String, m: &Model, v: ViewId, view_name: &str, id: &str, handle: &str) {
+    let Ok(st) = m.visual_style(v, id) else { return };
+    let fields: [(&str, &Option<String>); 12] = [
+        ("fill", &st.fill),
+        ("line", &st.line),
+        ("line_width", &st.line_width),
+        ("font", &st.font),
+        ("font_color", &st.font_color),
+        ("text_align", &st.text_align),
+        ("text_position", &st.text_position),
+        ("border", &st.border),
+        ("alpha", &st.alpha),
+        ("line_alpha", &st.line_alpha),
+        ("label", &st.label),
+        ("icon", &st.icon),
+    ];
+    let set: Vec<String> = fields
+        .iter()
+        .filter_map(|(k, v)| v.as_ref().map(|v| format!(",\"{k}\":{}", json_str(v))))
+        .collect();
+    if set.is_empty() {
+        return;
+    }
+    s.push_str(&format!(
+        "{{\"op\":\"view.style\",\"view\":{},\"target\":{}{}}}\n",
+        json_str(view_name),
+        json_str(handle),
+        set.join("")
+    ));
 }
 
 /// A JSON string literal. `serde_json` would do it, but for one field at a

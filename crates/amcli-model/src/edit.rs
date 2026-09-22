@@ -723,6 +723,206 @@ fn display_name(c: &Concept) -> String {
     if c.name.is_empty() { c.id.clone() } else { c.name.clone() }
 }
 
+// ---- styling ---------------------------------------------------------------
+
+/// A change to how one object or line on a view looks. `None` leaves a
+/// setting as it is; `Some("")` clears it back to Archi's default, which is
+/// the absent attribute.
+///
+/// Values are Archi's own encodings — a colour is `#rrggbb`, a font is the
+/// string Archi writes (`1|Arial|19.0|1|COCOA|1|`), alignment is 1, 2 or 4,
+/// text position 0, 1 or 2, border type 0, 1 or 2 — because they are stored
+/// verbatim and a poster exported and applied again must come back the same.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct StyleChange {
+    pub fill: Option<String>,
+    pub line: Option<String>,
+    pub line_width: Option<String>,
+    pub font: Option<String>,
+    pub font_color: Option<String>,
+    pub text_align: Option<String>,
+    pub text_position: Option<String>,
+    pub border: Option<String>,
+    pub alpha: Option<String>,
+    pub line_alpha: Option<String>,
+    /// The `labelExpression` feature: what is written on the figure or
+    /// the line instead of its name.
+    pub label: Option<String>,
+    /// The `iconVisible` feature: `2` hides the type icon, `1` always
+    /// shows it, empty is Archi's default.
+    pub icon: Option<String>,
+}
+
+/// What a visual on a view is, when a caller names one by id.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Visual {
+    Object(NodeId),
+    Connection(NodeId),
+}
+
+impl Model {
+    /// The object or connection with this id on the view.
+    pub fn visual(&self, view: ViewId, id: &str) -> Result<Visual, EditError> {
+        let view_node = self.view(view).node;
+        for n in self.doc.descendants(view_node) {
+            if self.doc.attr(n, "id").as_deref() != Some(id) {
+                continue;
+            }
+            match self.doc.local_name(n) {
+                "child" => return Ok(Visual::Object(n)),
+                "sourceConnection" => return Ok(Visual::Connection(n)),
+                _ => {}
+            }
+        }
+        Err(EditError::NoSuchObject(id.to_string(), self.view(view).name.clone()))
+    }
+
+    /// The connections on a view that draw a relationship, in document order.
+    pub fn view_connections_of(&self, view: ViewId, relationship_id: &str) -> Vec<String> {
+        let view_node = self.view(view).node;
+        self.doc
+            .descendants(view_node)
+            .into_iter()
+            .filter(|n| self.doc.local_name(*n) == "sourceConnection")
+            .filter(|n| {
+                self.doc.attr(*n, "archimateRelationship").as_deref() == Some(relationship_id)
+            })
+            .filter_map(|n| self.doc.attr(n, "id"))
+            .collect()
+    }
+
+    /// Change how an object or a line looks. Returns the settings it
+    /// touched, by Archi's attribute names.
+    ///
+    /// A cleared setting is the attribute removed, not written empty: EMF
+    /// omits a default, and an empty `fillColor=""` is a colour Archi
+    /// refuses to parse.
+    pub fn style_visual(
+        &mut self,
+        view: ViewId,
+        id: &str,
+        change: &StyleChange,
+    ) -> Result<Vec<&'static str>, EditError> {
+        let node = match self.visual(view, id)? {
+            Visual::Object(n) | Visual::Connection(n) => n,
+        };
+        let mut touched = Vec::new();
+        let attrs: [(&'static str, &Option<String>); 10] = [
+            ("fillColor", &change.fill),
+            ("lineColor", &change.line),
+            ("lineWidth", &change.line_width),
+            ("font", &change.font),
+            ("fontColor", &change.font_color),
+            ("textAlignment", &change.text_align),
+            ("textPosition", &change.text_position),
+            ("borderType", &change.border),
+            ("alpha", &change.alpha),
+            ("lineAlpha", &change.line_alpha),
+        ];
+        for (name, value) in attrs {
+            let Some(v) = value else { continue };
+            if v.is_empty() {
+                self.doc.remove_attr(node, name);
+            } else {
+                self.doc.set_attr(node, name, v);
+            }
+            touched.push(name);
+        }
+        for (name, value) in [("labelExpression", &change.label), ("iconVisible", &change.icon)] {
+            let Some(v) = value else { continue };
+            self.set_feature(node, name, v)?;
+            touched.push(name);
+        }
+        Ok(touched)
+    }
+
+    /// Set, replace or (with an empty value) remove a `<feature>` on a
+    /// diagram object or connection, where Archi keeps them: after the
+    /// bounds, before the connections and the nested objects.
+    fn set_feature(&mut self, node: NodeId, name: &str, value: &str) -> Result<(), EditError> {
+        let existing = self
+            .doc
+            .children(node)
+            .filter(|c| self.doc.local_name(*c) == "feature")
+            .find(|c| self.doc.attr(*c, "name").as_deref() == Some(name));
+        match (existing, value.is_empty()) {
+            (Some(f), true) => self.doc.remove_subtree(f),
+            (Some(f), false) => self.doc.set_attr(f, "value", value),
+            (None, true) => {}
+            (None, false) => {
+                let at = self.object_slot_for(node, "feature");
+                self.doc.insert_child(
+                    node,
+                    at,
+                    NodeBuilder::new("feature").attr("name", name).attr("value", value),
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The style an object or line carries, in the same shape a change is
+    /// given, so that what `export views` writes is what `view.style` reads.
+    pub fn visual_style(&self, view: ViewId, id: &str) -> Result<StyleChange, EditError> {
+        let node = match self.visual(view, id)? {
+            Visual::Object(n) | Visual::Connection(n) => n,
+        };
+        let a = |k: &str| self.doc.attr(node, k);
+        let feature =
+            |k: &str| self.features(node).into_iter().find(|(n, _)| n == k).map(|(_, v)| v);
+        Ok(StyleChange {
+            fill: a("fillColor"),
+            line: a("lineColor"),
+            line_width: a("lineWidth"),
+            font: a("font"),
+            font_color: a("fontColor"),
+            text_align: a("textAlignment"),
+            text_position: a("textPosition"),
+            border: a("borderType"),
+            alpha: a("alpha"),
+            line_alpha: a("lineAlpha"),
+            label: feature("labelExpression"),
+            icon: feature("iconVisible"),
+        })
+    }
+
+    /// The bendpoints stored on a connection, as Archi's relative offsets.
+    pub fn view_connection_bendpoints(
+        &self,
+        view: ViewId,
+        id: &str,
+    ) -> Result<Vec<(i32, i32, i32, i32)>, EditError> {
+        let Visual::Connection(n) = self.visual(view, id)? else {
+            return Err(EditError::NoSuchObject(id.to_string(), self.view(view).name.clone()));
+        };
+        let num =
+            |c: NodeId, k: &str| self.doc.attr(c, k).and_then(|v| v.parse().ok()).unwrap_or(0);
+        Ok(self
+            .doc
+            .children(n)
+            .filter(|c| self.doc.local_name(*c) == "bendpoint")
+            .map(|c| (num(c, "startX"), num(c, "startY"), num(c, "endX"), num(c, "endY")))
+            .collect())
+    }
+
+    /// The bounds an object stores: relative to its container, `-1` for a
+    /// default size.
+    pub fn view_object_bounds(
+        &self,
+        view: ViewId,
+        id: &str,
+    ) -> Result<(i32, i32, i32, i32), EditError> {
+        let Visual::Object(n) = self.visual(view, id)? else {
+            return Err(EditError::NoSuchObject(id.to_string(), self.view(view).name.clone()));
+        };
+        let b = self.doc.child_named(n, "bounds");
+        let num = |k: &str, d: i32| {
+            b.and_then(|b| self.doc.attr(b, k)).and_then(|v| v.parse().ok()).unwrap_or(d)
+        };
+        Ok((num("x", 0), num("y", 0), num("width", -1), num("height", -1)))
+    }
+}
+
 /// One object on a view, as [`Model::view_tree`] lists them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ViewObject {

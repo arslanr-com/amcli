@@ -2884,11 +2884,11 @@ fn nested_views_with_groups_and_notes_round_trip_through_export_views() {
     let spec = m.dir.path().join("views.jsonl");
     assert_eq!(m.run(&["export", "views", "-o", spec.to_str().unwrap()]).0, 0);
     let text = std::fs::read_to_string(&spec).unwrap();
-    assert!(text.contains(r#""op":"view.group","view":"N","name":"Zone","ref":"g1""#), "{text}");
-    assert!(text.contains(r#""target":"Outer","into":"ref:g1""#), "{text}");
+    assert!(text.contains(r#""op":"view.group","view":"N","name":"Zone","ref":"o1""#), "{text}");
+    assert!(text.contains(r#""target":"Outer","into":"ref:o1""#), "{text}");
     assert!(text.contains(r#""target":"Inner","into":"Outer""#), "{text}");
     assert!(
-        text.contains(r#""op":"view.note","view":"N","text":"Read me first","into":"ref:g1""#),
+        text.contains(r#""op":"view.note","view":"N","text":"Read me first","into":"ref:o1""#),
         "{text}"
     );
     assert!(!text.contains("not rebuilt"), "everything on the view is rebuilt: {text}");
@@ -3157,4 +3157,196 @@ fn diff_lists_exactly_the_changes_and_ignores_serialisation_noise() {
     assert_eq!(out, "", "no difference: {out}");
     let (_, json, _) = t.run(&["diff", &theirs, &noisy, "-F", "json"]);
     assert!(json.contains(r#""differences":0"#), "{json}");
+}
+
+/// A poster — regions, captions, colours, one chosen line routed around
+/// things — is built, styled and exported as a batch, and the batch
+/// rebuilds it byte for byte.
+#[test]
+fn a_styled_view_is_exported_as_it_was_drawn_and_rebuilds_byte_for_byte() {
+    let m = Model::new("modelimporter_test.archimate");
+    for stale in ["View 1", "View 2"] {
+        assert_eq!(m.run(&["view", "delete", stale, "-y"]).0, 0);
+    }
+    let seed = ["--id-seed", "poster"];
+    let seeded = |args: &[&str]| -> (i32, String, String) {
+        let mut all = args.to_vec();
+        all.extend_from_slice(&seed);
+        m.run(&all)
+    };
+    for n in ["Gateway", "Ledger"] {
+        assert_eq!(seeded(&["element", "add", "ApplicationComponent", n]).0, 0);
+    }
+    assert_eq!(
+        seeded(&["relation", "add", "Flow", "Gateway", "Ledger", "--name", "postings"]).0,
+        0
+    );
+    assert_eq!(seeded(&["relation", "add", "Serving", "Ledger", "Gateway"]).0, 0);
+    assert_eq!(seeded(&["view", "create", "P"]).0, 0);
+    let (code, out, err) = seeded(&[
+        "view", "group", "P", "Region", "--x", "0", "--y", "0", "--width", "600", "--height", "300",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let region = rows(&out)[0][0].to_string();
+    // Placed by hand, no connections drawn, one box twice.
+    assert_eq!(
+        seeded(&[
+            "view",
+            "add",
+            "P",
+            "Gateway",
+            "--into",
+            "Region",
+            "--x",
+            "20",
+            "--y",
+            "60",
+            "--width",
+            "200",
+            "--height",
+            "80",
+            "--no-connect"
+        ])
+        .0,
+        0
+    );
+    assert_eq!(
+        seeded(&[
+            "view",
+            "add",
+            "P",
+            "Ledger",
+            "--into",
+            "Region",
+            "--x",
+            "360",
+            "--y",
+            "60",
+            "--no-connect"
+        ])
+        .0,
+        0
+    );
+    let (code, out, err) = seeded(&[
+        "view",
+        "add",
+        "P",
+        "Ledger",
+        "--again",
+        "--x",
+        "700",
+        "--y",
+        "60",
+        "--no-connect",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(rows(&out)[0][5], "true", "a second box was drawn on purpose: {out}");
+    let (_, out, _) = m.run(&["view", "render", "P", "--as", "json", "-q"]);
+    assert_eq!(out.matches(r#""concept":"id-"#).count(), 3);
+    assert_eq!(out.matches(r#""relationship":"#).count(), 0, "nothing wired yet");
+
+    // Styled as a person would in Archi.
+    let (code, out, err) = seeded(&[
+        "view",
+        "style",
+        "P",
+        "Region",
+        "--fill",
+        "#EEF5FC",
+        "--line",
+        "#a4b4c5",
+        "--line-width",
+        "2",
+        "--font-size",
+        "20",
+        "--font-style",
+        "bold",
+        "--font-color",
+        "#183047",
+        "--border",
+        "rectangle",
+        "--text-align",
+        "left",
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(rows(&out)[0][2].contains("fillColor") && rows(&out)[0][2].contains("font"), "{out}");
+    assert_eq!(
+        seeded(&[
+            "view",
+            "style",
+            "P",
+            "Gateway",
+            "--label",
+            "${name}\nedge of the cell",
+            "--icon",
+            "hide",
+            "--text-position",
+            "top"
+        ])
+        .0,
+        0
+    );
+    let (code, _, err) = seeded(&["view", "style", "P", "Region", "--fill", "not-a-colour"]);
+    assert_eq!(code, 2, "a bad colour is refused: {err}");
+
+    // One chosen line, routed, styled — where sync would draw both.
+    let (code, out, err) =
+        seeded(&["view", "connect", "P", "Gateway", "Ledger", "--relationship", "Flow:postings"]);
+    assert_eq!(code, 0, "{err}");
+    let line = rows(&out)[0][0].to_string();
+    assert_eq!(seeded(&["view", "route", "P", &line, "--points", "120,250", "460,250"]).0, 0);
+    assert_eq!(
+        seeded(&[
+            "view",
+            "style",
+            "P",
+            "rel:Flow:postings",
+            "--line",
+            "#2563a6",
+            "--font-size",
+            "14",
+            "--font-style",
+            "italic",
+            "--label",
+            "1 · postings"
+        ])
+        .0,
+        0
+    );
+    let (_, svg, _) = m.run(&["view", "render", "P", "-q"]);
+    assert!(svg.contains(r##"fill="#eef5fc""##) && svg.contains("font-weight=\"bold\""), "{svg}");
+    assert!(svg.contains(">edge of the cell<") && svg.contains(">1 · postings<"), "{svg}");
+    assert!(svg.contains("120,250 460,250"), "the route is drawn through the points: {svg}");
+    let (_, out, _) = m.run(&["view", "render", "P", "--as", "json", "-q"]);
+    assert_eq!(out.matches(r#""relationship":"#).count(), 1, "only the chosen line");
+
+    // Exported as drawn: bounds, one connect, styles, a route, no layout.
+    let spec = m.dir.path().join("poster.jsonl");
+    assert_eq!(m.run(&["export", "views", "-o", spec.to_str().unwrap()]).0, 0);
+    let text = std::fs::read_to_string(&spec).unwrap();
+    assert!(text.contains(r#""op":"view.group","view":"P","name":"Region","ref":"o1","x":0,"y":0,"width":600,"height":300"#), "{text}");
+    assert!(text.contains(r#""target":"Ledger","into":"ref:o1","x":360,"y":60"#), "{text}");
+    assert!(text.contains(r#""again":true"#), "{text}");
+    assert!(
+        text.contains(r##""op":"view.style","view":"P","target":"ref:o1","fill":"#eef5fc""##),
+        "{text}"
+    );
+    assert!(text.contains(r#""op":"view.connect","view":"P""#), "{text}");
+    assert!(
+        text.contains(r#""op":"view.route","view":"P","target":"ref:c"#)
+            && text.contains("[[120,250],[460,250]]"),
+        "{text}"
+    );
+    assert!(
+        !text.contains(r#""op":"view.layout","view":"P""#),
+        "no layout for a hand-drawn view: {text}"
+    );
+    let _ = region;
+
+    let before = m.text();
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    assert_eq!(first_difference(&before, &m.text()), None, "one round trip changes nothing");
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    assert_eq!(first_difference(&before, &m.text()), None, "and neither does a second");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
 }

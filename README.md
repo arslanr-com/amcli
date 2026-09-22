@@ -188,6 +188,8 @@ amcli view move "Refunds" -f /Views/Payments  # file it; the id does not change
 amcli view add "Refunds" "Fraud Rules" --into "Fraud Check"   # nested, as Archi draws containment: no line
 amcli view group "Refunds" "Card rails"       # a titled box; view note puts free text on the canvas
 amcli folder rename /Views/Payments "Payments and Refunds"   # one attribute, not a new folder and a move
+amcli view style "Refunds" "Card rails" --fill "#eef5fc" --font-size 20 --font-style bold   # what a person sets in Archi's properties
+amcli view connect "Refunds" "Fraud Rules" "Acquirer"   # one chosen line; view route bends it; export views keeps it all
 amcli export views                            # the batch that rebuilds every view
 amcli export mermaid                          # a quick diagram for a chat window
 amcli view render "Refunds" -o refunds.png     # or .svg; --scale 2 for a slide

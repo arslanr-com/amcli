@@ -13,6 +13,8 @@ use clap::Subcommand;
 use crate::output::{CliError, Code, Output, Row};
 use crate::write::Opts;
 
+// A command is built once per run; boxing its largest variant would buy nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand, Clone)]
 pub enum ViewCmd {
     /// List views.
@@ -46,9 +48,16 @@ pub enum ViewCmd {
         x: Option<i32>,
         #[arg(long)]
         y: Option<i32>,
+        #[arg(long)]
+        width: Option<i32>,
+        #[arg(long)]
+        height: Option<i32>,
         /// Place the box only; do not draw its relationships.
         #[arg(long)]
         no_connect: bool,
+        /// Draw a second box for a concept the view already shows.
+        #[arg(long)]
+        again: bool,
     },
     /// Put a Group — a titled box that holds other objects and stands for
     /// no concept — on a view.
@@ -78,9 +87,84 @@ pub enum ViewCmd {
         x: Option<i32>,
         #[arg(long)]
         y: Option<i32>,
+        #[arg(long)]
+        width: Option<i32>,
+        #[arg(long)]
+        height: Option<i32>,
         /// The id of a note already on the view whose text this replaces.
         #[arg(long)]
         object: Option<String>,
+    },
+    /// Change how a box, a group, a note or a line looks: what a person
+    /// sets in Archi's properties. The target is an object id, a group's
+    /// name, a concept on the view, a connection id, or `rel:<selector>`
+    /// for every line drawing that relationship. A value of `""` clears a
+    /// setting back to Archi's default.
+    Style {
+        view: String,
+        target: String,
+        /// `#rrggbb`.
+        #[arg(long)]
+        fill: Option<String>,
+        /// `#rrggbb`, the border or the line.
+        #[arg(long)]
+        line: Option<String>,
+        #[arg(long)]
+        line_width: Option<String>,
+        /// Points; a point is a pixel, as on a Mac.
+        #[arg(long)]
+        font_size: Option<String>,
+        #[arg(long)]
+        font_face: Option<String>,
+        /// normal | bold | italic | bold-italic
+        #[arg(long)]
+        font_style: Option<String>,
+        /// Archi's whole font string, when you have one.
+        #[arg(long)]
+        font: Option<String>,
+        #[arg(long)]
+        font_color: Option<String>,
+        /// left | center | right
+        #[arg(long)]
+        text_align: Option<String>,
+        /// top | center | bottom; on a line: source | middle | target
+        #[arg(long)]
+        text_position: Option<String>,
+        /// On a group: tabbed | rectangle. On a note: dogear | rectangle | none.
+        #[arg(long)]
+        border: Option<String>,
+        /// Fill opacity 0–255.
+        #[arg(long)]
+        alpha: Option<String>,
+        #[arg(long)]
+        line_alpha: Option<String>,
+        /// What is written on it instead of its name; `${name}` and friends expand.
+        #[arg(long)]
+        label: Option<String>,
+        /// show | hide, the type icon.
+        #[arg(long)]
+        icon: Option<String>,
+    },
+    /// Route a line through points on the canvas, or straighten it.
+    Route {
+        view: String,
+        /// A connection id, or `rel:<selector>` for every line drawing that relationship.
+        target: String,
+        /// Absolute canvas points, `x,y` separated by spaces; none straightens the line.
+        #[arg(long, num_args = 0.., value_delimiter = ' ')]
+        points: Vec<String>,
+    },
+    /// Draw one relationship between two objects already on the view — the
+    /// one line a poster wants, where `view sync` would draw them all.
+    Connect {
+        view: String,
+        /// The source object: an id, a group's name or a concept on the view.
+        source: String,
+        target: String,
+        /// The relationship to draw; when omitted, the one relationship the
+        /// model has between the two concepts.
+        #[arg(long)]
+        relationship: Option<String>,
     },
     /// Move an object already on the view inside another one, or with no
     /// `--into` back to the top. It keeps its place on the canvas, and a
@@ -173,14 +257,68 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
         ViewCmd::Create { name, viewpoint, folder, replace } => {
             create(opts, m, name, viewpoint.as_deref(), folder.as_deref(), *replace)
         }
-        ViewCmd::Add { view, selector, into, x, y, no_connect } => {
-            add(opts, m, view, selector, into.as_deref(), *x, *y, !*no_connect)
-        }
+        ViewCmd::Add { view, selector, into, x, y, width, height, no_connect, again } => add(
+            opts,
+            m,
+            view,
+            selector,
+            into.as_deref(),
+            *x,
+            *y,
+            (*width, *height),
+            !*no_connect,
+            *again,
+        ),
         ViewCmd::Group { view, name, into, x, y, width, height } => {
             group(opts, m, view, name, into.as_deref(), *x, *y, *width, *height)
         }
-        ViewCmd::Note { view, text, into, x, y, object } => {
-            note(opts, m, view, text, into.as_deref(), *x, *y, object.as_deref())
+        ViewCmd::Note { view, text, into, x, y, width, height, object } => {
+            note(opts, m, view, text, into.as_deref(), *x, *y, (*width, *height), object.as_deref())
+        }
+        ViewCmd::Style {
+            view,
+            target,
+            fill,
+            line,
+            line_width,
+            font_size,
+            font_face,
+            font_style,
+            font,
+            font_color,
+            text_align,
+            text_position,
+            border,
+            alpha,
+            line_alpha,
+            label,
+            icon,
+        } => style(
+            opts,
+            m,
+            view,
+            target,
+            StyleFlags {
+                fill: fill.clone(),
+                line: line.clone(),
+                line_width: line_width.clone(),
+                font_size: font_size.clone(),
+                font_face: font_face.clone(),
+                font_style: font_style.clone(),
+                font: font.clone(),
+                font_color: font_color.clone(),
+                text_align: text_align.clone(),
+                text_position: text_position.clone(),
+                border: border.clone(),
+                alpha: alpha.clone(),
+                line_alpha: line_alpha.clone(),
+                label: label.clone(),
+                icon: icon.clone(),
+            },
+        ),
+        ViewCmd::Route { view, target, points } => route(opts, m, view, target, points),
+        ViewCmd::Connect { view, source, target, relationship } => {
+            connect(opts, m, view, source, target, relationship.as_deref())
         }
         ViewCmd::Nest { view, target, into } => nest(opts, m, view, target, into.as_deref()),
         ViewCmd::Sync { view } => sync(opts, m, view),
@@ -757,7 +895,9 @@ fn add(
     into: Option<&str>,
     x: Option<i32>,
     y: Option<i32>,
+    size: (Option<i32>, Option<i32>),
     connect: bool,
+    again: bool,
 ) -> Result<Output, CliError> {
     let v = find_view(m, view)?;
     let c = resolve(m, sel)?;
@@ -769,18 +909,21 @@ fn add(
     // same element is what a re-run "refresh" used to leave behind, and
     // nothing flagged it. The relationships it can draw are still drawn, so
     // adding a present member is how a view catches up with the model.
+    // `--again` is the deliberate second box a poster sometimes wants.
     let present = scene
         .nodes
         .iter()
         .find(|n| n.concept_id.as_deref() == Some(m.concept(c).id.as_str()))
+        .filter(|_| !again)
         .map(|n| (n.id.clone(), n.abs));
     let (id, slot, added) = match present {
         Some((id, rect)) => (id, rect, false),
         None => {
-            let (w, h) = match &m.concept(c).kind {
+            let (dw, dh) = match &m.concept(c).kind {
                 ConceptKind::Element(e) => e.info().default_wh,
                 _ => (120, 55),
             };
+            let (w, h) = (size.0.unwrap_or(dw), size.1.unwrap_or(dh));
             // Placed clear of everything already there, so adding one object
             // never disturbs the rest of the diagram.
             let (slot, grown) = slot_for_new(&scene, parent.as_deref(), w, h, (x, y));
@@ -878,6 +1021,7 @@ fn note(
     into: Option<&str>,
     x: Option<i32>,
     y: Option<i32>,
+    size: (Option<i32>, Option<i32>),
     object: Option<&str>,
 ) -> Result<Output, CliError> {
     let v = find_view(m, view)?;
@@ -897,7 +1041,8 @@ fn note(
         return finish(opts, m, row);
     }
     let parent = into.map(|p| find_object(m, &scene, p)).transpose()?;
-    let (w, h) = fit_note_size(text);
+    let (dw, dh) = fit_note_size(text);
+    let (w, h) = (size.0.unwrap_or(dw), size.1.unwrap_or(dh));
     let (slot, grown) = slot_for_new(&scene, parent.as_deref(), w, h, (x, y));
     grow(m, v, &grown)?;
     let id = m
@@ -909,6 +1054,345 @@ fn note(
         .n("x", slot.x as i64)
         .n("y", slot.y as i64)
         .n("chars", text.chars().count() as i64)
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+/// The style flags as the prompt and a batch give them: colours as
+/// `#rrggbb`, words for alignment and position, and a font either whole or
+/// as size, face and style. Empty strings clear.
+#[derive(Clone, Debug, Default)]
+pub struct StyleFlags {
+    pub fill: Option<String>,
+    pub line: Option<String>,
+    pub line_width: Option<String>,
+    pub font_size: Option<String>,
+    pub font_face: Option<String>,
+    pub font_style: Option<String>,
+    pub font: Option<String>,
+    pub font_color: Option<String>,
+    pub text_align: Option<String>,
+    pub text_position: Option<String>,
+    pub border: Option<String>,
+    pub alpha: Option<String>,
+    pub line_alpha: Option<String>,
+    pub label: Option<String>,
+    pub icon: Option<String>,
+}
+
+/// Every visual a style or route target names: one object, or every line
+/// drawing a relationship.
+fn find_visuals(
+    m: &Model,
+    v: ViewId,
+    scene: &amcli_view::Scene,
+    sel: &str,
+) -> Result<Vec<String>, CliError> {
+    if let Some(rel) = sel.strip_prefix("rel:") {
+        let r = resolve(m, rel)?;
+        let ids = m.view_connections_of(v, &m.concept(r).id);
+        if ids.is_empty() {
+            return Err(CliError::new(
+                Code::NotFound,
+                "not_found",
+                format!("`{}` is not drawn on view `{}`", m.concept(r).name, scene.view_name),
+            )
+            .hint("`amcli view connect` draws it between two objects"));
+        }
+        return Ok(ids);
+    }
+    let bare = sel.strip_prefix("id:").unwrap_or(sel);
+    if scene.edges.iter().any(|e| e.id == bare) {
+        return Ok(vec![bare.to_string()]);
+    }
+    Ok(vec![find_object(m, scene, sel)?])
+}
+
+/// Turn the flags into Archi's encodings, reading the visual's current
+/// font when only part of one is given.
+fn style_change(
+    m: &Model,
+    v: ViewId,
+    id: &str,
+    is_line: bool,
+    is_note: bool,
+    f: &StyleFlags,
+) -> Result<amcli_model::StyleChange, CliError> {
+    let usage = |what: &str, got: &str, want: &str| {
+        CliError::new(Code::Usage, "usage", format!("`{got}` is not a {what}"))
+            .hint(format!("one of: {want}"))
+    };
+    let colour = |c: &Option<String>, what: &str| -> Result<Option<String>, CliError> {
+        match c {
+            None => Ok(None),
+            Some(s) if s.is_empty() => Ok(Some(String::new())),
+            Some(s) => {
+                let ok = s.len() == 7
+                    && s.starts_with('#')
+                    && s[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+                if ok { Ok(Some(s.to_ascii_lowercase())) } else { Err(usage(what, s, "#rrggbb")) }
+            }
+        }
+    };
+    let word = |o: &Option<String>,
+                what: &str,
+                table: &[(&str, &str)]|
+     -> Result<Option<String>, CliError> {
+        match o {
+            None => Ok(None),
+            Some(s) if s.is_empty() => Ok(Some(String::new())),
+            // Archi's own code is accepted too: it is what `export views` writes.
+            Some(s) if table.iter().any(|(_, code)| *code == s.as_str()) => Ok(Some(s.clone())),
+            Some(s) => table
+                .iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case(s))
+                .map(|(_, code)| Some(code.to_string()))
+                .ok_or_else(|| {
+                    usage(what, s, &table.iter().map(|(k, _)| *k).collect::<Vec<_>>().join(" | "))
+                }),
+        }
+    };
+    // The font: given whole, or composed from the parts over what is there.
+    let font = match &f.font {
+        Some(whole) => Some(whole.clone()),
+        None if f.font_size.is_some() || f.font_face.is_some() || f.font_style.is_some() => {
+            let current = m.visual_style(v, id).ok().and_then(|s| s.font).unwrap_or_default();
+            let mut parts: Vec<&str> = current.split('|').collect();
+            let (face, size, style) = if parts.len() >= 6 {
+                (parts[1].to_string(), parts[2].to_string(), parts[3].to_string())
+            } else {
+                ("Arial".to_string(), "12.0".to_string(), "0".to_string())
+            };
+            let _ = &mut parts;
+            let face = f.font_face.clone().filter(|s| !s.is_empty()).unwrap_or(face);
+            let size = match &f.font_size {
+                Some(s) if !s.is_empty() => {
+                    let n: f64 =
+                        s.parse().map_err(|_| usage("font size", s, "a number of points"))?;
+                    format!("{n:.1}")
+                }
+                _ => size,
+            };
+            let style = match f.font_style.as_deref() {
+                Some("normal") => "0".to_string(),
+                Some("bold") => "1".to_string(),
+                Some("italic") => "2".to_string(),
+                Some("bold-italic") => "3".to_string(),
+                Some(other) if !other.is_empty() => {
+                    return Err(usage("font style", other, "normal | bold | italic | bold-italic"));
+                }
+                _ => style,
+            };
+            Some(format!("1|{face}|{size}|{style}|COCOA|1|"))
+        }
+        None => None,
+    };
+    let border_table: &[(&str, &str)] = if is_note {
+        &[("dogear", "0"), ("rectangle", "1"), ("none", "2")]
+    } else {
+        &[("tabbed", "0"), ("rectangle", "1")]
+    };
+    let position_table: &[(&str, &str)] = if is_line {
+        &[("source", "0"), ("middle", "1"), ("target", "2")]
+    } else {
+        &[("top", "0"), ("center", "1"), ("centre", "1"), ("bottom", "2")]
+    };
+    Ok(amcli_model::StyleChange {
+        fill: colour(&f.fill, "colour")?,
+        line: colour(&f.line, "colour")?,
+        line_width: f.line_width.clone(),
+        font,
+        font_color: colour(&f.font_color, "colour")?,
+        text_align: word(
+            &f.text_align,
+            "text alignment",
+            &[("left", "1"), ("center", "2"), ("centre", "2"), ("right", "4")],
+        )?,
+        text_position: word(&f.text_position, "text position", position_table)?,
+        border: word(&f.border, "border", border_table)?,
+        alpha: f.alpha.clone(),
+        line_alpha: f.line_alpha.clone(),
+        label: f.label.clone(),
+        icon: word(&f.icon, "icon setting", &[("show", "1"), ("hide", "2"), ("default", "")])?,
+    })
+}
+
+pub fn style(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    target: &str,
+    flags: StyleFlags,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let ids = find_visuals(m, v, &scene, target)?;
+    let mut rows = Vec::new();
+    for id in &ids {
+        let is_line = scene.edges.iter().any(|e| e.id == *id);
+        let is_note = scene.nodes.iter().any(|n| n.id == *id && matches!(n.figure, Figure::Note));
+        let change = style_change(m, v, id, is_line, is_note, &flags)?;
+        let touched = m
+            .style_visual(v, id, &change)
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+        rows.push(
+            Row::new()
+                .s("object", id.clone())
+                .s("kind", if is_line { "line" } else { "object" })
+                .s("set", touched.join(","))
+                .b("dry_run", opts.dry_run),
+        );
+    }
+    if !opts.dry_run {
+        crate::write::save(m)?;
+    }
+    let out = Output::rows(rows).wrote(!opts.dry_run);
+    Ok(if opts.dry_run { out.note("dry run: nothing was written") } else { out })
+}
+
+pub fn route(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    target: &str,
+    points: &[String],
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let ids = find_visuals(m, v, &scene, target)?;
+    let pts: Vec<amcli_view::Pt> = points
+        .iter()
+        .filter(|p| !p.is_empty())
+        .map(|p| {
+            let (x, y) = p
+                .split_once(',')
+                .and_then(|(a, b)| Some((a.trim().parse().ok()?, b.trim().parse().ok()?)))
+                .ok_or_else(|| {
+                    CliError::new(Code::Usage, "usage", format!("`{p}` is not a point"))
+                        .hint("write each point as x,y")
+                })?;
+            Ok(amcli_view::Pt { x, y })
+        })
+        .collect::<Result<_, CliError>>()?;
+    let mut rows = Vec::new();
+    for id in &ids {
+        let Some((_, src, tgt)) = m.view_connections(v).into_iter().find(|(c, _, _)| c == id)
+        else {
+            return Err(CliError::new(Code::Invalid, "invalid", format!("`{id}` is not a line")));
+        };
+        let rect = |o: &str| scene.nodes.iter().find(|n| n.id == o).map(|n| n.abs);
+        let (Some(sb), Some(tb)) = (rect(&src), rect(&tgt)) else {
+            return Err(CliError::new(
+                Code::Invalid,
+                "invalid",
+                format!("`{id}` ends on something with no bounds"),
+            ));
+        };
+        let bends: Vec<(i32, i32, i32, i32)> = pts
+            .iter()
+            .map(|p| {
+                let b = amcli_view::geometry::bendpoint_for(sb, tb, *p);
+                (b.start_x, b.start_y, b.end_x, b.end_y)
+            })
+            .collect();
+        m.set_view_connection_bendpoints(v, id, &bends)
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+        rows.push(
+            Row::new()
+                .s("object", id.clone())
+                .n("points", bends.len() as i64)
+                .b("dry_run", opts.dry_run),
+        );
+    }
+    if !opts.dry_run {
+        crate::write::save(m)?;
+    }
+    let out = Output::rows(rows).wrote(!opts.dry_run);
+    Ok(if opts.dry_run { out.note("dry run: nothing was written") } else { out })
+}
+
+pub fn connect(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    source: &str,
+    target: &str,
+    relationship: Option<&str>,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let src = find_object(m, &scene, source)?;
+    let tgt = find_object(m, &scene, target)?;
+    let concept_of =
+        |o: &str| scene.nodes.iter().find(|n| n.id == o).and_then(|n| n.concept_id.clone());
+    let rel = match relationship {
+        Some(sel) => resolve(m, sel)?,
+        None => {
+            let (Some(a), Some(b)) = (concept_of(&src), concept_of(&tgt)) else {
+                return Err(CliError::new(
+                    Code::Usage,
+                    "usage",
+                    "both ends must show a concept, or pass --relationship",
+                ));
+            };
+            let between: Vec<ConceptId> = m
+                .concepts_with_ids()
+                .filter(|(_, c)| {
+                    c.kind.is_relationship()
+                        && ((c.source.as_deref() == Some(a.as_str())
+                            && c.target.as_deref() == Some(b.as_str()))
+                            || (c.source.as_deref() == Some(b.as_str())
+                                && c.target.as_deref() == Some(a.as_str())))
+                })
+                .map(|(i, _)| i)
+                .collect();
+            match between.as_slice() {
+                [one] => *one,
+                [] => {
+                    return Err(CliError::new(
+                        Code::NotFound,
+                        "not_found",
+                        "the model has no relationship between the two",
+                    )
+                    .hint("`amcli relation add` first, with --no-draw, then connect"));
+                }
+                many => {
+                    return Err(CliError::new(
+                        Code::Ambiguous,
+                        "ambiguous",
+                        format!("{} relationships between the two", many.len()),
+                    )
+                    .hint("pass --relationship id:…")
+                    .rows(
+                        many.iter()
+                            .map(|r| {
+                                Row::new()
+                                    .s("selector", format!("id:{}", m.concept(*r).id))
+                                    .s("type", m.concept(*r).kind.name())
+                            })
+                            .collect(),
+                    ));
+                }
+            }
+        }
+    };
+    // The line runs the relationship's way whichever way the objects were named.
+    let r = m.concept(rel);
+    let (from, to) = if r.source.as_deref() == concept_of(&tgt).as_deref()
+        && r.target.as_deref() == concept_of(&src).as_deref()
+    {
+        (tgt.clone(), src.clone())
+    } else {
+        (src.clone(), tgt.clone())
+    };
+    let id = m
+        .add_view_connection(v, rel, &from, &to, &[])
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("object", id)
+        .s("relationship", m.concept(rel).id.clone())
+        .s("source", from)
+        .s("target", to)
         .b("dry_run", opts.dry_run);
     finish(opts, m, row)
 }

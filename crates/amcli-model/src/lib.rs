@@ -10,7 +10,7 @@ pub mod generated;
 pub mod ids;
 pub mod model;
 
-pub use edit::{Cascade, EditError, ViewObject};
+pub use edit::{Cascade, EditError, StyleChange, ViewObject, Visual};
 pub use generated::{ElementType, FolderType, Layer, RelType, matrix, viewpoints};
 pub use model::{Concept, ConceptId, ConceptKind, Entity, Folder, FolderId, Model, View, ViewId};
 

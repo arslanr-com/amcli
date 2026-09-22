@@ -70,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.16.1**. The installer always gives you the
+This skill is written for **amcli 0.17.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -308,6 +308,10 @@ mirrors — and never deletes anyone's modelling.
     amcli view note "Refund Flow" "Sandbox until go-live" --into "Card rails"
     amcli view nest "Refund Flow" "Fraud Rules" --into "Card rails"   # move a box into another; no --into puts it back on top
     amcli view sync "Refund Flow"              # draw what the model says between members and the view does not show
+    amcli view style "Refund Flow" "Card rails" --fill "#eef5fc" --font-size 20 --font-style bold --border rectangle
+    amcli view style "Refund Flow" "rel:id:8f3c1a02" --line "#2563a6" --label "P7 · bureaus"   # every line drawing that relationship
+    amcli view connect "Refund Flow" "Fraud Rules" "Acquirer"      # one line, where sync would draw them all
+    amcli view route "Refund Flow" id:<connection> --points 640,200 900,200
     amcli view layout "Refund Flow" --relayout-all
     amcli view rename "Refund Flow" "Refunds"
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
@@ -339,6 +343,18 @@ line between the two, exactly as dragging does in Archi — or, with no
 and sizes every container to what it holds. `view group` puts a titled box
 that stands for no concept on the view, `view note` free text; both take
 `--into`, and `view note --object ID "…"` rewrites a note already there.
+
+**A poster — a drawing laid out by hand — is a batch too.** `view add`
+takes `--x --y --width --height` and `--again` (a second box for a concept
+the view already shows), `view group` and `view note` take sizes, `view
+style` sets what a person sets in Archi's properties on a box, a group, a
+note or a line (fill, line, width, font, text colour, alignment, position,
+border, opacity, a label expression, the icon), `view connect` draws one
+chosen relationship between two objects, and `view route` bends a line
+through canvas points. `export views` writes a view that carries any style
+as it was drawn — every bound, every line, every style and route, and no
+layout — so a poster is a reviewable, re-runnable file rather than
+something only Archi can edit; `references/batch.md` has the fields.
 
 A view name is unique: creating a second view with a name already in use is exit
 6. Pass `--replace` to overwrite the old one, which is what makes a

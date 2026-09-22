@@ -96,6 +96,7 @@ pub struct Cli {
     command: Command,
 }
 
+#[allow(clippy::large_enum_variant)] // built once per run
 #[derive(Subcommand)]
 enum Command {
     /// A concept with its inbound and outbound relationships.

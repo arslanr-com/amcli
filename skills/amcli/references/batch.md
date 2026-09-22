@@ -72,9 +72,13 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.add","view":"Payments","target":"ref:x"}
     {"op":"view.add","view":"Payments","target":"Checkout","x":240,"y":0,"no_connect":true}
     {"op":"view.add","view":"Payments","target":"Fraud Check","into":"Checkout"}
+    {"op":"view.add","view":"Payments","target":"Fraud Check","again":true,"x":600,"y":40,"width":200,"height":80,"ref":"fc2"}
     {"op":"view.group","view":"Payments","name":"Card rails","ref":"g1","into":"Checkout","x":0,"y":0,"width":400,"height":140}
     {"op":"view.add","view":"Payments","target":"Acquirer","into":"ref:g1"}
-    {"op":"view.note","view":"Payments","text":"Sandbox only until go-live","ref":"n1","into":"ref:g1","x":0,"y":0}
+    {"op":"view.note","view":"Payments","text":"Sandbox only until go-live","ref":"n1","into":"ref:g1","x":0,"y":0,"width":300,"height":60}
+    {"op":"view.style","view":"Payments","target":"ref:g1","fill":"#eef5fc","line":"#a4b4c5","line_width":"2","font_size":"20","font_face":"Arial","font_style":"bold","font":"","font_color":"#183047","text_align":"left","text_position":"top","border":"rectangle","alpha":"255","line_alpha":"255","label":"${name}\nap-south-1","icon":"hide"}
+    {"op":"view.connect","view":"Payments","source":"ref:fc2","target":"Acquirer","relationship":"id:abc","ref":"c1"}
+    {"op":"view.route","view":"Payments","target":"ref:c1","points":[[640,200],[900,200]]}
     {"op":"view.nest","view":"Payments","target":"Acquirer","into":"Checkout"}
     {"op":"view.sync","view":"Payments"}
     {"op":"view.doc","view":"Payments","text":"What this drawing is for. Empty clears it."}
@@ -109,6 +113,33 @@ into another does in Archi. `view.sync` draws every relationship the model
 holds between two members of the view that the view does not show yet,
 skipping what the nesting already says. `view.layout` lays each container's
 children out inside it and sizes the container to what it holds.
+
+**Posters.** A drawing laid out by hand — regions as groups, boxes with
+their own captions and colours, numbered flows routed around things — is
+a batch too. `view.add` takes `x`, `y`, `width`, `height` and, for a
+concept the view already shows, `"again":true` for a second box; every
+`view.add`, `view.group` and `view.note` may bind a `ref` so later lines
+can name that object. `view.style` sets what a person sets in Archi's
+properties on an object or a line: `fill`, `line`, `line_width`, the font
+as `font_size` / `font_face` / `font_style` (normal, bold, italic,
+bold-italic) or whole as `font` (Archi's `1|Arial|19.0|1|COCOA|1|`),
+`font_color`, `text_align` (left, center, right), `text_position` (top,
+center, bottom; on a line source, middle, target), `border` (a group:
+tabbed, rectangle; a note: dogear, rectangle, none), `alpha` and
+`line_alpha` (0–255), `label` (a label expression: `${name}`,
+`${documentation}`, `${type}`, `${property:KEY}` expand, anything else is
+literal, `\n` breaks a line) and `icon` (show, hide); Archi's own codes
+are accepted where the words are, and `""` clears a setting. Its target is
+an object id, a group's name, a concept on the view, a `ref:`, a
+connection id, or `rel:<selector>` for every line drawing that
+relationship. `view.connect` draws one relationship between two objects —
+the one line a poster wants where `view.sync` would draw them all — and
+binds a `ref` for the line; `view.route` bends a line through absolute
+canvas points (an empty list straightens it). `export views` writes a view
+that carries any style this way — bounds on every object, one
+`view.connect` per line, `view.style` and `view.route` where they apply,
+and no `view.layout` — so a poster rebuilds as it was drawn; a plain view
+is still its members and a layout.
 
 `view.add` of a concept already on the view adds nothing — the row says
 `added false` — but still draws any relationship that concept can newly
