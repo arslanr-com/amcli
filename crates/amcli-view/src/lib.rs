@@ -63,7 +63,37 @@ pub struct Node {
     pub text_position: u8,
     /// False when the object's `iconVisible` feature hides the type icon.
     pub icon_visible: bool,
+    /// The font the author chose for this object, when they chose one.
+    pub font: Option<Font>,
+    /// The colour of its text, when the author set one.
+    pub font_color: Option<Rgb>,
+    /// Archi's `borderType`: on a Group 0 is tabbed and 1 a plain rectangle;
+    /// on a Note 0 is the dog-eared corner, 1 a rectangle, 2 no border.
+    pub border: u8,
     pub type_name: String,
+}
+
+/// A font as Archi stores it on an object: `1|Arial|19.0|1|COCOA|1|` is
+/// version, face, height in points, SWT style (1 bold, 2 italic, 3 both),
+/// platform, and a flag. Only the size and the style matter to a drawing;
+/// the face is whatever the machine has.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Font {
+    pub size: f64,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl Font {
+    /// Parse Archi's font string; `None` when it is absent or unreadable.
+    pub fn parse(s: &str) -> Option<Font> {
+        let mut parts = s.split('|');
+        let _version = parts.next()?;
+        let _face = parts.next()?;
+        let size: f64 = parts.next()?.trim().parse().ok()?;
+        let style: u8 = parts.next().and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        (size > 0.0).then_some(Font { size, bold: style & 1 != 0, italic: style & 2 != 0 })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -71,6 +101,9 @@ pub struct Edge {
     pub id: String,
     pub relationship_id: Option<String>,
     pub label: String,
+    /// The font and colour the author gave the label, when they did.
+    pub font: Option<Font>,
+    pub font_color: Option<Rgb>,
     pub points: Vec<Pt>,
     pub dash: Option<&'static str>,
     pub source_deco: Deco,
@@ -208,6 +241,9 @@ fn walk(
         text_position: m.doc.attr(node, "textPosition").and_then(|s| s.parse().ok()).unwrap_or(1),
         // 0 shows the icon unless an image replaces it, 1 always, 2 never.
         icon_visible: feature("iconVisible") != Some("2"),
+        font: m.doc.attr(node, "font").and_then(|f| Font::parse(&f)),
+        font_color: m.doc.attr(node, "fontColor").and_then(|s| parse_hex(&s)),
+        border: m.doc.attr(node, "borderType").and_then(|s| s.parse().ok()).unwrap_or(0),
         type_name: concept.map(|c| c.kind.name().to_string()).unwrap_or_else(|| bare.to_string()),
     });
     bounds_of.insert(id.clone(), abs);
@@ -365,6 +401,8 @@ fn collect_edges(
             id,
             relationship_id: rel_id,
             label,
+            font: m.doc.attr(n, "font").and_then(|f| Font::parse(&f)),
+            font_color: m.doc.attr(n, "fontColor").and_then(|s| parse_hex(&s)),
             points,
             dash: style.dash,
             source_deco: style.source,

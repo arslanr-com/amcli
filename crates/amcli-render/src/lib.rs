@@ -167,6 +167,26 @@ fn node(s: &mut String, n: &Node, o: &Options) {
             ];
             let _ = write!(s, r#"      <polygon points="{}" {common}/>"#, points(&pts));
         }
+        // A note's border is the author's choice: the dog-eared corner,
+        // a plain rectangle, or none at all.
+        Figure::Note if n.border == 1 => {
+            let _ = write!(
+                s,
+                r#"      <rect x="{}" y="{}" width="{}" height="{}" {common}/>"#,
+                r.x, r.y, r.w, r.h
+            );
+        }
+        Figure::Note if n.border == 2 => {
+            let _ = write!(
+                s,
+                r#"      <rect x="{}" y="{}" width="{}" height="{}" fill="{fill}" fill-opacity="{}" stroke="none"/>"#,
+                r.x,
+                r.y,
+                r.w,
+                r.h,
+                num(opacity)
+            );
+        }
         Figure::Note => {
             const D: i32 = NOTE_DOG_EAR;
             let pts = [
@@ -177,6 +197,14 @@ fn node(s: &mut String, n: &Node, o: &Options) {
                 (r.x, r.y + r.h),
             ];
             let _ = write!(s, r#"      <polygon points="{}" {common}/>"#, points(&pts));
+        }
+        // A group drawn as a plain rectangle, its name across the top.
+        Figure::Tabbed if n.border == 1 => {
+            let _ = write!(
+                s,
+                r#"      <rect x="{}" y="{}" width="{}" height="{}" {common}/>"#,
+                r.x, r.y, r.w, r.h
+            );
         }
         Figure::Tabbed => {
             // A tab across the top-left, then the body. Tab width is half the
@@ -243,9 +271,33 @@ fn shows_icon(n: &Node) -> bool {
 /// margin, and less the type icon's width off both sides when the icon shows.
 /// Wrapping inside the same width is what makes this drawing agree with the
 /// one in Archi about how many lines a name takes.
+/// The `font-size`, weight, style and colour attributes a text element gets
+/// when the author chose them; nothing when the sheet's defaults apply.
+fn font_attrs(font: Option<amcli_view::Font>, color: Option<amcli_view::Rgb>) -> String {
+    let mut a = String::new();
+    if let Some(f) = font {
+        let _ = write!(a, r#" font-size="{}""#, num(f.size));
+        if f.bold {
+            a.push_str(r#" font-weight="bold""#);
+        }
+        if f.italic {
+            a.push_str(r#" font-style="italic""#);
+        }
+    }
+    if let Some(c) = color {
+        let _ = write!(a, r#" fill="{}""#, c.hex());
+    }
+    a
+}
+
 fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     let r = n.abs;
     let pad = 5.0;
+    // The author's font, when they chose one, sizes both the wrap and the
+    // line height: a poster's twenty-point group titles are what make it
+    // readable when it is fitted to a screen.
+    let font_size = n.font.map(|f| f.size).unwrap_or(o.font_size);
+    let attrs = font_attrs(n.font, n.font_color);
     // A Group's name belongs to its tab, and the tab is half the figure wide
     // and one line tall — so that, not the figure, is the box the text has to
     // fit. Measured against the whole width it wrapped to six lines and ran
@@ -256,10 +308,10 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
         _ => amcli_view::layout::ICON_INSET as f64,
     };
     let usable = (box_w - 2.0 * inset).max(10.0);
-    let per_char = o.font_size * 0.52;
+    let per_char = font_size * 0.52;
     let max_chars = (usable / per_char).floor().max(1.0) as usize;
     let lines = wrap(text, max_chars);
-    let line_h = o.font_size * 1.25;
+    let line_h = font_size * 1.25;
 
     let (anchor, tx) = match n.text_align {
         1 => ("start", r.x as f64 + pad),
@@ -274,6 +326,9 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
         // figure wide and one line tall, and a name of any length either ran
         // out through its right edge or had to be cut down to one word. The
         // body is the whole width and  makes it tall enough.
+        // A rectangle group carries its name along the top, as Archi draws
+        // it; a tabbed one in the body.
+        Figure::Tabbed if n.border == 1 => r.y as f64 + pad,
         Figure::Tabbed => {
             let block = lines.len() as f64 * line_h;
             r.y as f64 + GROUP_HEADER as f64 + ((r.h - GROUP_HEADER) as f64 - block) / 2.0
@@ -295,7 +350,7 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
         let y = top + (i as f64 + 0.8) * line_h;
         let _ = writeln!(
             s,
-            "      <text x=\"{}\" y=\"{}\" text-anchor=\"{anchor}\">{}</text>",
+            "      <text x=\"{}\" y=\"{}\" text-anchor=\"{anchor}\"{attrs}>{}</text>",
             num(tx),
             num(y),
             esc(l)
@@ -364,17 +419,23 @@ fn edge(s: &mut String, e: &amcli_view::Edge, o: &Options) {
     decoration(s, e.target_deco, e.points[n - 1], e.points[n - 2], &line);
 
     if !e.label.is_empty() {
-        let mid = e.points[n / 2];
-        let _ = writeln!(
-            s,
-            "      <text x=\"{}\" y=\"{}\" text-anchor=\"middle\">{}</text>",
-            mid.x,
-            mid.y - 4,
-            esc(&e.label)
-        );
+        // Halfway along the line, one text per line of the label; an author's
+        // multi-line caption stays multi-line.
+        let (a, b) = (e.points[(n - 1) / 2], e.points[n / 2]);
+        let (mx, my) = ((a.x + b.x) as f64 / 2.0, (a.y + b.y) as f64 / 2.0);
+        let attrs = font_attrs(e.font, e.font_color);
+        let line_h = e.font.map(|f| f.size).unwrap_or(o.font_size) * 1.25;
+        for (i, l) in e.label.split('\n').enumerate() {
+            let _ = writeln!(
+                s,
+                "      <text x=\"{}\" y=\"{}\" text-anchor=\"middle\"{attrs}>{}</text>",
+                num(mx),
+                num(my - 4.0 + i as f64 * line_h),
+                esc(l)
+            );
+        }
     }
     let _ = writeln!(s, "    </g>");
-    let _ = o;
 }
 
 fn decoration(s: &mut String, d: Deco, tip: Pt, back: Pt, line: &str) {
