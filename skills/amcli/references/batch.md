@@ -23,6 +23,8 @@ up, and no rollback step that could itself fail.
     {"op":"prop.unset","target":"ref:x","key":"owner"}
     {"op":"folder.add","parent":"/Application","name":"Payments"}
     {"op":"folder.delete","path":"/Application/Payments"}
+    {"op":"folder.rename","path":"/Application/Payments","name":"Payments and Refunds"}
+    {"op":"folder.move","path":"/Application/Payments and Refunds","parent":"/Application/Core"}
 
 `access` is Access relationships only: `read`, `write`, `rw`, `unspecified`.
 `name` labels the line — Archi reads an Association as "related to" without
@@ -42,6 +44,12 @@ refuses is an old binary: the hint says so, and how to upgrade.
 both ends**, exactly as the command does; the row's `views` counts them.
 `"no_draw":true` adds it to the model only. A line skipped by `if_absent`
 draws nothing and reports the views the existing relationship is on.
+
+`folder.rename` changes one attribute — the folder keeps its id and
+everything in it stays where it is — and `folder.move` re-files a folder
+with its contents under another folder of the same tree; a folder never
+leaves the top-level folder of its type, and the top-level folders
+themselves cannot be renamed or moved.
 
 `relation.delete` takes the relationship itself, which you address by id or by
 a `ref:` from an earlier line; a relationship rarely has a name to call it by.
@@ -63,6 +71,12 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.create","name":"Payments","viewpoint":"application_cooperation","folder":"/Views/Payments","replace":true}
     {"op":"view.add","view":"Payments","target":"ref:x"}
     {"op":"view.add","view":"Payments","target":"Checkout","x":240,"y":0,"no_connect":true}
+    {"op":"view.add","view":"Payments","target":"Fraud Check","into":"Checkout"}
+    {"op":"view.group","view":"Payments","name":"Card rails","ref":"g1","into":"Checkout","x":0,"y":0,"width":400,"height":140}
+    {"op":"view.add","view":"Payments","target":"Acquirer","into":"ref:g1"}
+    {"op":"view.note","view":"Payments","text":"Sandbox only until go-live","ref":"n1","into":"ref:g1","x":0,"y":0}
+    {"op":"view.nest","view":"Payments","target":"Acquirer","into":"Checkout"}
+    {"op":"view.sync","view":"Payments"}
     {"op":"view.doc","view":"Payments","text":"What this drawing is for. Empty clears it."}
     {"op":"view.auto","name":"Around X","from":"ref:x","depth":2,"direction":"both","layout":"auto","viewpoint":"application_cooperation","folder":"/Views/Payments","replace":true}
     {"op":"view.layout","view":"Payments","algorithm":"auto","relayout_all":true}
@@ -80,6 +94,21 @@ covers them; and with `replace` on the create and a seed set, re-running
 the batch is a no-op in git. `view.rename` is the exception: like a second
 `view rename` at the prompt it fails on the re-run, so keep it out of a
 batch meant to be re-run.
+
+**Nesting.** `view.add` with `into` draws the box inside another object:
+a concept on the view, a group's name, an object id, or the `ref:` a
+`view.group` line bound. The container grows to hold it, and no line is
+drawn between the two, because a box inside a box is how Archi shows the
+relationship between them — every relationship type, by its default
+preferences. `view.group` puts a titled box that stands for no concept on
+the view and binds its `ref` so objects can be nested in it; `view.note` puts
+free text there. `view.nest` moves an object already on the view inside
+another (or, with no `into`, back to the top), keeping its place on the
+canvas and removing any line between the two, exactly as dragging a box
+into another does in Archi. `view.sync` draws every relationship the model
+holds between two members of the view that the view does not show yet,
+skipping what the nesting already says. `view.layout` lays each container's
+children out inside it and sizes the container to what it holds.
 
 `view.add` of a concept already on the view adds nothing — the row says
 `added false` — but still draws any relationship that concept can newly

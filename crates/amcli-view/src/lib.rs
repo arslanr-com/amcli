@@ -41,7 +41,11 @@ pub struct Node {
     pub id: String,
     /// The concept this displays, when it displays one.
     pub concept_id: Option<String>,
+    /// The object this one is drawn inside, when it is nested.
+    pub parent_id: Option<String>,
     pub figure: Figure,
+    /// What is written on the figure: the concept's name, unless a label
+    /// expression on the object says otherwise.
     pub label: String,
     /// A note's body text.
     pub content: String,
@@ -55,6 +59,10 @@ pub struct Node {
     pub line_width: u32,
     /// 1 left, 2 centre, 4 right.
     pub text_align: u8,
+    /// 0 top, 1 centre, 2 bottom — where the label sits in the figure.
+    pub text_position: u8,
+    /// False when the object's `iconVisible` feature hides the type icon.
+    pub icon_visible: bool,
     pub type_name: String,
 }
 
@@ -86,7 +94,7 @@ pub fn compile(m: &Model, view: ViewId) -> Scene {
     let mut bounds_of: std::collections::HashMap<String, Rect> = Default::default();
     let children: Vec<NodeId> = m.doc.children(v.node).collect();
     for c in children {
-        walk(m, c, 0, 0, 0, &mut scene, &mut bounds_of);
+        walk(m, c, 0, 0, 0, None, &mut scene, &mut bounds_of);
     }
 
     collect_edges(m, v.node, &bounds_of, &mut scene);
@@ -107,12 +115,14 @@ pub fn compile(m: &Model, view: ViewId) -> Scene {
     scene
 }
 
+#[allow(clippy::too_many_arguments)] // a tree walk carries its origin, depth and parent
 fn walk(
     m: &Model,
     node: NodeId,
     ox: i32,
     oy: i32,
     depth: usize,
+    parent_id: Option<&str>,
     scene: &mut Scene,
     bounds_of: &mut std::collections::HashMap<String, Rect>,
 ) {
@@ -124,6 +134,8 @@ fn walk(
     let bare = xsi.trim_start_matches("archimate:");
     let concept_id = m.doc.attr(node, "archimateElement");
     let concept = concept_id.as_deref().and_then(|c| m.concept_by_id(c)).map(|c| m.concept(c));
+    let features = m.features(node);
+    let feature = |name: &str| features.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
 
     let (dw, dh) = default_size(bare, concept.map(|c| &c.kind));
     let b = read_bounds(m, node, dw, dh);
@@ -154,15 +166,37 @@ fn walk(
             _ => fill.derived_line(),
         });
 
+    let content = m.doc.child_named(node, "content").map(|n| m.doc.text(n)).unwrap_or_default();
+    // A note has no name; what it says is its label.
+    let name = concept
+        .map(|c| c.name.clone())
+        .or_else(|| m.doc.attr(node, "name"))
+        .or_else(|| (!content.is_empty()).then(|| content.clone()));
+    // A label expression, as jArchi and Archi 4.8+ write it, replaces the
+    // name on the figure: `${name}` and friends expand, anything else is the
+    // literal text the author typed.
+    let label = match feature("labelExpression").filter(|e| !e.trim().is_empty()) {
+        Some(expr) => expand_label(
+            expr,
+            &LabelContext {
+                name: name.as_deref().unwrap_or_default(),
+                documentation: concept.and_then(|c| m.documentation(c.node)).unwrap_or_default(),
+                type_name: concept.map(|c| c.kind.name()).unwrap_or(bare),
+                properties: concept.map(|c| m.properties(c.node)).unwrap_or_default(),
+                view_name: &scene.view_name,
+                model_name: &m.name(),
+            },
+        ),
+        None => name.unwrap_or_default(),
+    };
+
     scene.nodes.push(Node {
         id: id.clone(),
         concept_id: concept_id.clone(),
+        parent_id: parent_id.map(str::to_string),
         figure,
-        label: concept
-            .map(|c| c.name.clone())
-            .or_else(|| m.doc.attr(node, "name"))
-            .unwrap_or_default(),
-        content: m.doc.child_named(node, "content").map(|n| m.doc.text(n)).unwrap_or_default(),
+        label,
+        content,
         abs,
         depth,
         fill,
@@ -171,13 +205,70 @@ fn walk(
         line_alpha: m.doc.attr(node, "lineAlpha").and_then(|s| s.parse().ok()).unwrap_or(255),
         line_width: m.doc.attr(node, "lineWidth").and_then(|s| s.parse().ok()).unwrap_or(1),
         text_align: m.doc.attr(node, "textAlignment").and_then(|s| s.parse().ok()).unwrap_or(2),
+        text_position: m.doc.attr(node, "textPosition").and_then(|s| s.parse().ok()).unwrap_or(1),
+        // 0 shows the icon unless an image replaces it, 1 always, 2 never.
+        icon_visible: feature("iconVisible") != Some("2"),
         type_name: concept.map(|c| c.kind.name().to_string()).unwrap_or_else(|| bare.to_string()),
     });
-    bounds_of.insert(id, abs);
+    bounds_of.insert(id.clone(), abs);
 
     for c in m.doc.children(node).collect::<Vec<_>>() {
-        walk(m, c, abs.x, abs.y, depth + 1, scene, bounds_of);
+        walk(m, c, abs.x, abs.y, depth + 1, Some(&id), scene, bounds_of);
     }
+}
+
+/// What a label expression may refer to.
+pub struct LabelContext<'a> {
+    pub name: &'a str,
+    pub documentation: String,
+    pub type_name: &'a str,
+    pub properties: Vec<(String, String)>,
+    pub view_name: &'a str,
+    pub model_name: &'a str,
+}
+
+/// Expand an Archi label expression.
+///
+/// The expressions Archi's own label editor offers are all `${…}`: `name`,
+/// `documentation`, `type`, `property:KEY`, `view:name`, `model:name`, and
+/// `viewpoint`. Those are resolved; a reference this build does not know is
+/// left as written, because a label that shows `${something}` is a label the
+/// author can see went wrong, and one silently blanked is not. Text outside a
+/// reference is kept verbatim, newlines included — that is how a poster's
+/// multi-line captions are written.
+pub fn expand_label(expr: &str, ctx: &LabelContext<'_>) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let mut rest = expr;
+    while let Some(start) = rest.find("${") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        let Some(end) = after.find('}') else {
+            out.push_str(&rest[start..]);
+            return out;
+        };
+        let key = &after[..end];
+        let value = match key {
+            "name" => Some(ctx.name.to_string()),
+            "documentation" | "doc" => Some(ctx.documentation.clone()),
+            "type" => Some(ctx.type_name.to_string()),
+            "view:name" => Some(ctx.view_name.to_string()),
+            "model:name" => Some(ctx.model_name.to_string()),
+            k => k.strip_prefix("property:").map(|p| {
+                ctx.properties
+                    .iter()
+                    .find(|(k, _)| k == p)
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_default()
+            }),
+        };
+        match value {
+            Some(v) => out.push_str(&v),
+            None => out.push_str(&rest[start..start + 2 + end + 1]),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn collect_edges(
@@ -186,6 +277,10 @@ fn collect_edges(
     bounds_of: &std::collections::HashMap<String, Rect>,
     scene: &mut Scene,
 ) {
+    // Who holds whom, so a line between a container and what it holds can be
+    // left undrawn, as Archi leaves it: the nesting already says it.
+    let parent_of: std::collections::HashMap<&str, &str> =
+        scene.nodes.iter().filter_map(|n| Some((n.id.as_str(), n.parent_id.as_deref()?))).collect();
     for n in m.doc.descendants(view_node) {
         if m.doc.local_name(n) != "sourceConnection" {
             continue;
@@ -193,7 +288,18 @@ fn collect_edges(
         let id = m.doc.attr(n, "id").unwrap_or_default();
         let src = m.doc.attr(n, "source").unwrap_or_default();
         let tgt = m.doc.attr(n, "target").unwrap_or_default();
+        if parent_of.get(src.as_str()) == Some(&tgt.as_str())
+            || parent_of.get(tgt.as_str()) == Some(&src.as_str())
+        {
+            continue;
+        }
         let rel_id = m.doc.attr(n, "archimateRelationship");
+        let expression = m
+            .features(n)
+            .into_iter()
+            .find(|(k, _)| k == "labelExpression")
+            .map(|(_, v)| v)
+            .filter(|e| !e.trim().is_empty());
 
         // A connection may end on another connection. Those have no bounds of
         // their own, so the edge is skipped rather than drawn to the origin.
@@ -240,6 +346,20 @@ fn collect_edges(
         let style = rel_type
             .map(|r| notation::rel_style(r, access, directed))
             .unwrap_or(notation::RelStyle { dash: None, source: Deco::None, target: Deco::None });
+        let label = match expression {
+            Some(expr) => expand_label(
+                &expr,
+                &LabelContext {
+                    name: &label,
+                    documentation: rel.and_then(|c| m.documentation(c.node)).unwrap_or_default(),
+                    type_name: rel.map(|c| c.kind.name()).unwrap_or_default(),
+                    properties: rel.map(|c| m.properties(c.node)).unwrap_or_default(),
+                    view_name: &scene.view_name,
+                    model_name: &m.name(),
+                },
+            ),
+            None => label,
+        };
 
         scene.edges.push(Edge {
             id,
@@ -309,3 +429,34 @@ fn parse_hex(s: &str) -> Option<Rgb> {
 /// Relationship types that carry containment, used when deciding what a
 /// generated view should nest.
 pub const NESTING: [RelType; 2] = [RelType::Composition, RelType::Aggregation];
+
+#[cfg(test)]
+mod label_tests {
+    use super::{LabelContext, expand_label};
+
+    fn ctx() -> LabelContext<'static> {
+        LabelContext {
+            name: "Payments",
+            documentation: "Takes the money.".into(),
+            type_name: "ApplicationComponent",
+            properties: vec![("owner".into(), "Team A".into())],
+            view_name: "V",
+            model_name: "M",
+        }
+    }
+
+    #[test]
+    fn the_references_archi_offers_expand_and_the_rest_stays_literal() {
+        assert_eq!(expand_label("${name}", &ctx()), "Payments");
+        assert_eq!(expand_label("${name}\n${type}", &ctx()), "Payments\nApplicationComponent");
+        assert_eq!(expand_label("Owner: ${property:owner}", &ctx()), "Owner: Team A");
+        assert_eq!(expand_label("${property:none}!", &ctx()), "!");
+        assert_eq!(
+            expand_label("${documentation} (${view:name}/${model:name})", &ctx()),
+            "Takes the money. (V/M)"
+        );
+        assert_eq!(expand_label("${specialization}", &ctx()), "${specialization}");
+        assert_eq!(expand_label("plain text", &ctx()), "plain text");
+        assert_eq!(expand_label("${unclosed", &ctx()), "${unclosed");
+    }
+}

@@ -93,6 +93,10 @@ enum Op {
     FolderAdd { parent: String, name: String },
     #[serde(rename = "folder.delete")]
     FolderDelete { path: String },
+    #[serde(rename = "folder.rename")]
+    FolderRename { path: String, name: String },
+    #[serde(rename = "folder.move")]
+    FolderMove { path: String, parent: String },
 
     // View operations. Each mirrors a `view` subcommand and takes the same
     // names for the same things; a concept may be given as `ref:name`.
@@ -108,11 +112,41 @@ enum Op {
     ViewAdd {
         view: String,
         target: String,
+        /// Nest it inside this object: a concept on the view, a group's
+        /// name, an object id, or the `ref:` of a `view.group` line.
+        into: Option<String>,
         x: Option<i32>,
         y: Option<i32>,
         #[serde(default)]
         no_connect: bool,
     },
+    #[serde(rename = "view.group")]
+    ViewGroup {
+        view: String,
+        name: String,
+        into: Option<String>,
+        x: Option<i32>,
+        y: Option<i32>,
+        width: Option<i32>,
+        height: Option<i32>,
+        /// Binds the group's object id, so a later `into` can name it.
+        #[serde(rename = "ref")]
+        reference: Option<String>,
+    },
+    #[serde(rename = "view.note")]
+    ViewNote {
+        view: String,
+        text: String,
+        into: Option<String>,
+        x: Option<i32>,
+        y: Option<i32>,
+        #[serde(rename = "ref")]
+        reference: Option<String>,
+    },
+    #[serde(rename = "view.nest")]
+    ViewNest { view: String, target: String, into: Option<String> },
+    #[serde(rename = "view.sync")]
+    ViewSync { view: String },
     #[serde(rename = "view.auto")]
     ViewAuto {
         name: String,
@@ -404,8 +438,9 @@ fn apply_one(
                 replace: *replace,
             },
         ),
-        Op::ViewAdd { view, target, x, y, no_connect } => {
+        Op::ViewAdd { view, target, into, x, y, no_connect } => {
             let selector = deref(m, refs, target)?;
+            let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
             view_op(
                 opts,
                 m,
@@ -413,11 +448,57 @@ fn apply_one(
                 ViewCmd::Add {
                     view: view.clone(),
                     selector,
+                    into,
                     x: *x,
                     y: *y,
                     no_connect: *no_connect,
                 },
             )
+        }
+        Op::ViewGroup { view, name, into, x, y, width, height, reference } => {
+            let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
+            let row = view_op(
+                opts,
+                m,
+                "view.group",
+                ViewCmd::Group {
+                    view: view.clone(),
+                    name: name.clone(),
+                    into,
+                    x: *x,
+                    y: *y,
+                    width: *width,
+                    height: *height,
+                },
+            )?;
+            bind_object(refs, reference.as_deref(), &row);
+            Ok(row)
+        }
+        Op::ViewNote { view, text, into, x, y, reference } => {
+            let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
+            let row = view_op(
+                opts,
+                m,
+                "view.note",
+                ViewCmd::Note {
+                    view: view.clone(),
+                    text: text.clone(),
+                    into,
+                    x: *x,
+                    y: *y,
+                    object: None,
+                },
+            )?;
+            bind_object(refs, reference.as_deref(), &row);
+            Ok(row)
+        }
+        Op::ViewNest { view, target, into } => {
+            let target = deref_object(refs, target)?;
+            let into = into.as_deref().map(|i| deref_object(refs, i)).transpose()?;
+            view_op(opts, m, "view.nest", ViewCmd::Nest { view: view.clone(), target, into })
+        }
+        Op::ViewSync { view } => {
+            view_op(opts, m, "view.sync", ViewCmd::Sync { view: view.clone() })
         }
         Op::ViewAuto { name, from, depth, direction, layout, viewpoint, folder, replace } => {
             let from = deref(m, refs, from)?;
@@ -490,6 +571,52 @@ fn apply_one(
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
             Ok(Row::new().s("op", "folder.delete").s("path", full))
         }
+        Op::FolderRename { path, name } => {
+            let f = folder_of(m, path)?;
+            let from = m.folder(f).path.clone();
+            m.rename_folder(f, name)
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+            Ok(Row::new()
+                .s("op", "folder.rename")
+                .s("from", from)
+                .s("path", m.folder(f).path.clone()))
+        }
+        Op::FolderMove { path, parent } => {
+            let f = folder_of(m, path)?;
+            let p = folder_of(m, parent)?;
+            let from = m.folder(f).path.clone();
+            m.move_folder(f, p)
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+            Ok(Row::new()
+                .s("op", "folder.move")
+                .s("from", from)
+                .s("path", m.folder(f).path.clone()))
+        }
+    }
+}
+
+/// An object on a view named in a batch: a `ref:` bound by an earlier
+/// `view.group` or `view.note` line becomes that object's id; anything else
+/// — a concept, a group's name, an object id — passes through for the view
+/// command to resolve on the view.
+fn deref_object(refs: &HashMap<String, String>, sel: &str) -> Result<String, CliError> {
+    if let Some(name) = sel.strip_prefix("ref:") {
+        let id = refs.get(name).ok_or_else(|| {
+            CliError::new(Code::NotFound, "not_found", format!("no earlier line named `{name}`"))
+                .hint("a ref must be defined by a previous line")
+        })?;
+        return Ok(format!("id:{id}"));
+    }
+    Ok(sel.to_string())
+}
+
+/// Bind a `ref` to the object a view line made, read off its row.
+fn bind_object(refs: &mut HashMap<String, String>, reference: Option<&str>, row: &Row) {
+    if let Some(r) = reference
+        && let Some(crate::output::Value::Str(id)) =
+            row.0.iter().find(|(k, _)| k.as_ref() == "object").map(|(_, v)| v)
+    {
+        refs.insert(r.to_string(), id.clone());
     }
 }
 

@@ -29,6 +29,21 @@ pub enum EditError {
     FolderNotEmpty(String, usize),
     #[error("`{0}` is one of the folders Archi expects at the top; it cannot be deleted")]
     TopFolder(String),
+    #[error("`{0}` is one of the folders Archi expects at the top; it cannot be renamed or moved")]
+    TopFolderFixed(String),
+    #[error(
+        "`{0}` cannot move under `{1}`: a folder stays inside the top-level folder of its type, \
+         because Archi files each kind of thing in its own tree"
+    )]
+    FolderTree(String, String),
+    #[error("`{0}` cannot move under `{1}`, which is inside it")]
+    FolderCycle(String, String),
+    #[error("no object `{0}` on view `{1}`")]
+    NoSuchObject(String, String),
+    #[error("`{0}` cannot be nested inside `{1}`, which is inside it")]
+    ObjectCycle(String, String),
+    #[error("`{0}` is not something that can hold other objects")]
+    NotAContainer(String),
     #[error(
         "ArchiMate does not permit {rel} from {source_type} to {target_type}{}",
         permitted_hint(.permitted)
@@ -277,6 +292,67 @@ impl Model {
         )?;
         self.reindex();
         Ok(self.folder_id_by_id(&id).expect("just added"))
+    }
+
+    /// Rename a folder. The top-level folders are Archi's and keep their names.
+    ///
+    /// Renaming used to take three commands — make the new folder, move
+    /// everything into it, delete the old one — which also gave the folder a
+    /// new id and moved every view's bytes in the file: a four-thousand-line
+    /// diff for one word. This changes one attribute.
+    pub fn rename_folder(&mut self, folder: FolderId, name: &str) -> Result<(), EditError> {
+        if self.folder(folder).parent.is_none() {
+            return Err(EditError::TopFolderFixed(self.folder(folder).path.clone()));
+        }
+        let node = self.folder(folder).node;
+        self.doc.set_attr(node, "name", name);
+        self.reindex();
+        Ok(())
+    }
+
+    /// Re-file a folder, with everything in it, under another folder of the
+    /// same tree. The node keeps its bytes, so the views and concepts inside
+    /// move as one block and nothing in them is rewritten.
+    pub fn move_folder(&mut self, folder: FolderId, parent: FolderId) -> Result<(), EditError> {
+        let path = self.folder(folder).path.clone();
+        if self.folder(folder).parent.is_none() {
+            return Err(EditError::TopFolderFixed(path));
+        }
+        let dest = self.folder(parent).path.clone();
+        if self.top_of(folder) != self.top_of(parent) {
+            return Err(EditError::FolderTree(path, dest));
+        }
+        let mut at = Some(parent);
+        while let Some(f) = at {
+            if f == folder {
+                return Err(EditError::FolderCycle(path, dest));
+            }
+            at = self.folder(f).parent;
+        }
+        let node = self.folder(folder).node;
+        let target = self.folder(parent).node;
+        if self.doc.parent(node) == Some(target) {
+            return Ok(());
+        }
+        // Among the folders, before the elements, as `add_folder` places one.
+        let slot = self
+            .doc
+            .children(target)
+            .filter(|c| *c != node)
+            .take_while(|c| self.doc.local_name(*c) == "folder")
+            .count();
+        self.doc.move_child(node, target, slot);
+        self.reindex();
+        Ok(())
+    }
+
+    /// The top-level folder a folder sits under.
+    fn top_of(&self, folder: FolderId) -> FolderId {
+        let mut f = folder;
+        while let Some(p) = self.folder(f).parent {
+            f = p;
+        }
+        f
     }
 
     // ---- changing -------------------------------------------------------
@@ -647,6 +723,20 @@ fn display_name(c: &Concept) -> String {
     if c.name.is_empty() { c.id.clone() } else { c.name.clone() }
 }
 
+/// One object on a view, as [`Model::view_tree`] lists them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ViewObject {
+    pub id: String,
+    /// `DiagramObject`, `Group`, `Note`, `DiagramModelReference`, …
+    pub kind: String,
+    /// The concept an element's box shows; `None` for a group or a note.
+    pub concept: Option<String>,
+    /// The object this one is nested in; `None` at the top of the view.
+    pub parent: Option<String>,
+    /// A group's name, a note's text; empty for an element's box.
+    pub text: String,
+}
+
 // ---- views ---------------------------------------------------------------
 
 impl Model {
@@ -684,21 +774,154 @@ impl Model {
         w: i32,
         h: i32,
     ) -> Result<String, EditError> {
+        self.add_view_object_in(view, concept, None, x, y, w, h)
+    }
+
+    /// [`Self::add_view_object`], nested inside another object on the view
+    /// when `into` names one.
+    ///
+    /// Nesting is how Archi draws containment: a box inside a box stands for
+    /// the relationship between them, and the line is not drawn. The bounds
+    /// are relative to the container, as Archi stores them.
+    #[allow(clippy::too_many_arguments)] // one per coordinate, as the CLI passes them
+    pub fn add_view_object_in(
+        &mut self,
+        view: ViewId,
+        concept: ConceptId,
+        into: Option<&str>,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<String, EditError> {
         let concept_id = self.concept(concept).id.clone();
         let view_id = self.view(view).id.clone();
         let id = self.fresh_id(&["object", &view_id, &concept_id]);
+        let b = NodeBuilder::new("child")
+            .attr("xsi:type", "archimate:DiagramObject")
+            .attr("id", &*id)
+            .attr("archimateElement", &*concept_id);
+        self.insert_object(view, into, b, x, y, w, h)?;
+        Ok(id)
+    }
+
+    /// Put a Group — a titled box that holds other objects and stands for no
+    /// concept — on a view, returning its id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_view_group(
+        &mut self,
+        view: ViewId,
+        name: &str,
+        into: Option<&str>,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<String, EditError> {
+        let view_id = self.view(view).id.clone();
+        let id = self.fresh_id(&["group", &view_id, name]);
+        let b = NodeBuilder::new("child")
+            .attr("xsi:type", "archimate:Group")
+            .attr("id", &*id)
+            .attr("name", name);
+        self.insert_object(view, into, b, x, y, w, h)?;
+        Ok(id)
+    }
+
+    /// Put a Note — free text on the canvas — on a view, returning its id.
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_view_note(
+        &mut self,
+        view: ViewId,
+        text: &str,
+        into: Option<&str>,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<String, EditError> {
+        let view_id = self.view(view).id.clone();
+        let id = self.fresh_id(&["note", &view_id, text]);
+        let b = NodeBuilder::new("child").attr("xsi:type", "archimate:Note").attr("id", &*id);
+        let obj = self.insert_object(view, into, b, x, y, w, h)?;
+        if !text.is_empty() {
+            let at = self.object_slot_for(obj, "content");
+            self.doc.insert_child(obj, at, NodeBuilder::new("content").text(text))?;
+        }
+        self.reindex();
+        Ok(id)
+    }
+
+    /// Replace a Note's text. An empty string removes it.
+    pub fn set_note_content(
+        &mut self,
+        view: ViewId,
+        object_id: &str,
+        text: &str,
+    ) -> Result<(), EditError> {
+        let obj = self.object_node(view, object_id)?;
+        match self.doc.child_named(obj, "content") {
+            Some(c) if text.is_empty() => self.doc.remove_subtree(c),
+            Some(c) => self.doc.set_text(c, text)?,
+            None if text.is_empty() => {}
+            None => {
+                let at = self.object_slot_for(obj, "content");
+                self.doc.insert_child(obj, at, NodeBuilder::new("content").text(text))?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The node that is `obj`, or the view itself for `None`, checked to be
+    /// something that can hold objects: an element's box or a Group. A Note
+    /// holds text, not boxes, and a connection holds nothing.
+    fn container_node(&self, view: ViewId, into: Option<&str>) -> Result<NodeId, EditError> {
+        let Some(id) = into else { return Ok(self.view(view).node) };
+        let n = self.object_node(view, id)?;
+        let xsi = self.doc.attr(n, "xsi:type").unwrap_or_default();
+        match xsi.trim_start_matches("archimate:") {
+            "DiagramObject" | "Group" => Ok(n),
+            _ => Err(EditError::NotAContainer(id.to_string())),
+        }
+    }
+
+    /// A diagram object on a view, by id.
+    fn object_node(&self, view: ViewId, object_id: &str) -> Result<NodeId, EditError> {
         let view_node = self.view(view).node;
+        self.doc
+            .descendants(view_node)
+            .into_iter()
+            .find(|n| {
+                self.doc.local_name(*n) == "child"
+                    && self.doc.attr(*n, "id").as_deref() == Some(object_id)
+            })
+            .ok_or_else(|| {
+                EditError::NoSuchObject(object_id.to_string(), self.view(view).name.clone())
+            })
+    }
+
+    /// Create an object under the view or inside a container, with its bounds.
+    #[allow(clippy::too_many_arguments)]
+    fn insert_object(
+        &mut self,
+        view: ViewId,
+        into: Option<&str>,
+        b: NodeBuilder,
+        x: i32,
+        y: i32,
+        w: i32,
+        h: i32,
+    ) -> Result<NodeId, EditError> {
+        let parent = self.container_node(view, into)?;
         // After the last object, and before the view's documentation and
-        // properties: see `slot_for`.
-        let at = self.slot_for(view_node, "child");
-        let obj = self.doc.insert_child(
-            view_node,
-            at,
-            NodeBuilder::new("child")
-                .attr("xsi:type", "archimate:DiagramObject")
-                .attr("id", &*id)
-                .attr("archimateElement", &*concept_id),
-        )?;
+        // properties; inside an object, after its connections: see
+        // `slot_for` and `object_slot_for`.
+        let at = if into.is_some() {
+            self.object_slot_for(parent, "child")
+        } else {
+            self.slot_for(parent, "child")
+        };
+        let obj = self.doc.insert_child(parent, at, b)?;
         // `<bounds>` is a child element, not attributes on the object.
         self.doc.append_child(
             obj,
@@ -709,7 +932,168 @@ impl Model {
                 .attr("height", h.to_string()),
         )?;
         self.reindex();
-        Ok(id)
+        Ok(obj)
+    }
+
+    /// Where a new child of this kind goes among a diagram object's children,
+    /// in the order Archi writes them: `<bounds>`, then `<feature>`, then the
+    /// connections leaving it, then the objects nested in it, then a Note's
+    /// `<content>`, then documentation and properties — the metamodel lists
+    /// the object's own features before the container's.
+    fn object_slot_for(&self, obj: NodeId, kind: &str) -> usize {
+        fn rank(name: &str) -> u8 {
+            match name {
+                "bounds" => 0,
+                "feature" => 1,
+                "sourceConnection" => 2,
+                "child" => 3,
+                "content" => 4,
+                "documentation" => 5,
+                "property" => 6,
+                _ => 3,
+            }
+        }
+        let want = rank(kind);
+        self.doc
+            .children(obj)
+            .enumerate()
+            .filter(|(_, c)| rank(self.doc.local_name(*c)) <= want)
+            .map(|(i, _)| i + 1)
+            .last()
+            .unwrap_or(0)
+    }
+
+    /// Move an object already on a view inside another object, or back to
+    /// the top with `None`, keeping its place on the canvas.
+    ///
+    /// This is what Archi does when a box is dragged into another: the bounds
+    /// become relative to the new container, and a line drawn between the
+    /// two is deleted, because the nesting now stands for it. The ids of the
+    /// connections removed are returned.
+    pub fn nest_view_object(
+        &mut self,
+        view: ViewId,
+        object_id: &str,
+        into: Option<&str>,
+    ) -> Result<Vec<String>, EditError> {
+        let node = self.object_node(view, object_id)?;
+        let target = self.container_node(view, into)?;
+        if target == node || self.doc.descendants(node).contains(&target) {
+            return Err(EditError::ObjectCycle(
+                object_id.to_string(),
+                into.unwrap_or_default().to_string(),
+            ));
+        }
+        // Absolute position before the move, so it can be kept after it.
+        let (ax, ay) = self.absolute_origin(view, node);
+        let (px, py) = if into.is_some() { self.absolute_origin(view, target) } else { (0, 0) };
+        let already = self.doc.parent(node) == Some(target);
+        if !already {
+            let at = if into.is_some() {
+                self.object_slot_for(target, "child")
+            } else {
+                self.slot_for(target, "child")
+            };
+            self.doc.move_child(node, target, at);
+            if let Some(b) = self.doc.child_named(node, "bounds") {
+                self.doc.set_attr(b, "x", &(ax - px).to_string());
+                self.doc.set_attr(b, "y", &(ay - py).to_string());
+            }
+        }
+        // A connection between a container and what it now holds is hidden
+        // by the nesting; Archi removes it, and so does this.
+        let mut removed = Vec::new();
+        if let Some(parent_id) = into {
+            let doomed: Vec<(NodeId, String)> = self
+                .doc
+                .descendants(self.view(view).node)
+                .into_iter()
+                .filter(|n| self.doc.local_name(*n) == "sourceConnection")
+                .filter(|n| {
+                    let s = self.doc.attr(*n, "source").unwrap_or_default();
+                    let t = self.doc.attr(*n, "target").unwrap_or_default();
+                    (s == object_id && t == parent_id) || (s == parent_id && t == object_id)
+                })
+                .filter_map(|n| Some((n, self.doc.attr(n, "id")?)))
+                .collect();
+            for (n, id) in doomed {
+                self.doc.remove_subtree(n);
+                removed.push(id);
+            }
+            if !removed.is_empty() {
+                self.recompute_target_connections(view);
+            }
+        }
+        self.reindex();
+        Ok(removed)
+    }
+
+    /// Where an object sits on the canvas: its own bounds plus every
+    /// container's above it, since each is stored relative to its parent.
+    fn absolute_origin(&self, view: ViewId, node: NodeId) -> (i32, i32) {
+        let view_node = self.view(view).node;
+        let (mut x, mut y) = (0, 0);
+        let mut cur = Some(node);
+        while let Some(n) = cur {
+            if n == view_node {
+                break;
+            }
+            if let Some(b) = self.doc.child_named(n, "bounds") {
+                x += self.doc.attr(b, "x").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+                y += self.doc.attr(b, "y").and_then(|v| v.parse::<i32>().ok()).unwrap_or(0);
+            }
+            cur = self.doc.parent(n);
+        }
+        (x, y)
+    }
+
+    /// Every object on a view with what it shows and what holds it, in
+    /// document order: (object id, kind, concept id, container object id,
+    /// name or text). `kind` is `DiagramObject`, `Group`, `Note` or whatever
+    /// else Archi drew; the container is `None` at the top of the view.
+    pub fn view_tree(&self, view: ViewId) -> Vec<ViewObject> {
+        let view_node = self.view(view).node;
+        self.doc
+            .descendants(view_node)
+            .into_iter()
+            .filter(|n| self.doc.local_name(*n) == "child")
+            .filter_map(|n| {
+                let id = self.doc.attr(n, "id")?;
+                let xsi = self.doc.attr(n, "xsi:type").unwrap_or_default();
+                let parent = self
+                    .doc
+                    .parent(n)
+                    .filter(|p| self.doc.local_name(*p) == "child")
+                    .and_then(|p| self.doc.attr(p, "id"));
+                let text = match xsi.trim_start_matches("archimate:") {
+                    "Note" => self.doc.child_named(n, "content").map(|c| self.doc.text(c)),
+                    _ => self.doc.attr(n, "name"),
+                };
+                Some(ViewObject {
+                    id,
+                    kind: xsi.trim_start_matches("archimate:").to_string(),
+                    concept: self.doc.attr(n, "archimateElement"),
+                    parent,
+                    text: text.unwrap_or_default(),
+                })
+            })
+            .collect()
+    }
+
+    /// The pairs of concepts a view shows one inside the other, as
+    /// (container's concept, nested concept). A relationship between two of
+    /// them is on the view without a line — that is what the nesting says.
+    pub fn view_nestings(&self, view: ViewId) -> Vec<(String, String)> {
+        let tree = self.view_tree(view);
+        let concept_of: std::collections::HashMap<&str, &str> =
+            tree.iter().filter_map(|o| Some((o.id.as_str(), o.concept.as_deref()?))).collect();
+        tree.iter()
+            .filter_map(|o| {
+                let inner = o.concept.as_deref()?;
+                let outer = concept_of.get(o.parent.as_deref()?)?;
+                Some((outer.to_string(), inner.to_string()))
+            })
+            .collect()
     }
 
     /// Draw a relationship between two objects already on the view.
@@ -743,8 +1127,12 @@ impl Model {
             })
             .ok_or_else(|| EditError::NoSuchConcept(source_object.to_string()))?;
 
-        let conn = self.doc.append_child(
+        // Among the object's other connections, before anything nested in
+        // it: see `object_slot_for`.
+        let at = self.object_slot_for(src, "sourceConnection");
+        let conn = self.doc.insert_child(
             src,
+            at,
             NodeBuilder::new("sourceConnection")
                 .attr("xsi:type", "archimate:Connection")
                 .attr("id", &*id)
@@ -776,20 +1164,25 @@ impl Model {
     /// an element is dropped onto a diagram. Every "draw what can be drawn"
     /// decision — `view add` wiring a new box to what is there, `relation
     /// add` reaching every view that shows both ends — asks this one question.
+    ///
+    /// Also `None` when one end's box sits directly inside the other's: the
+    /// nesting stands for the relationship, and Archi draws no line for it —
+    /// its default is to hide every relationship type between a container
+    /// and what it holds.
     pub fn undrawn_connection(&self, view: ViewId, rel: ConceptId) -> Option<(String, String)> {
         let r = self.concept(rel);
         let (src, tgt) = (r.source.as_deref()?, r.target.as_deref()?);
         let view_node = self.view(view).node;
-        let (mut src_obj, mut tgt_obj) = (None, None);
+        let (mut src_obj, mut tgt_obj): (Option<NodeId>, Option<NodeId>) = (None, None);
         for n in self.doc.descendants(view_node) {
             match self.doc.local_name(n) {
                 "child" => {
                     let Some(shown) = self.doc.attr(n, "archimateElement") else { continue };
                     if shown == src && src_obj.is_none() {
-                        src_obj = self.doc.attr(n, "id");
+                        src_obj = Some(n);
                     }
                     if shown == tgt && tgt_obj.is_none() {
-                        tgt_obj = self.doc.attr(n, "id");
+                        tgt_obj = Some(n);
                     }
                 }
                 "sourceConnection"
@@ -800,7 +1193,11 @@ impl Model {
                 _ => {}
             }
         }
-        Some((src_obj?, tgt_obj?))
+        let (s, t) = (src_obj?, tgt_obj?);
+        if self.doc.parent(s) == Some(t) || self.doc.parent(t) == Some(s) {
+            return None;
+        }
+        Some((self.doc.attr(s, "id")?, self.doc.attr(t, "id")?))
     }
 
     /// Draw a relationship on every view that already shows both of its ends,

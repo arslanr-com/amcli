@@ -274,3 +274,24 @@ fn an_emptied_element_closes_itself_again() {
     assert_eq!(doc.text(doc.root()), "   ");
     assert_eq!(String::from_utf8(doc.to_bytes()).unwrap(), r#"<a k="v">   </a>"#);
 }
+
+/// A self-closing element three folders deep, given its first child by a
+/// later run, closes at its own depth — the depth its opening tag sits at,
+/// not one level up. Views in real models carried a `</element>` two spaces
+/// short of their opening tag, and any line-based merge that matches the
+/// closing tag by indent is thrown by that.
+#[test]
+fn an_element_that_gains_its_first_child_closes_at_its_own_depth() {
+    let src = "<a>\n  <b>\n    <c>\n      <d x=\"1\"/>\n    </c>\n  </b>\n</a>\n";
+    let mut doc = Doc::parse(src.as_bytes().to_vec()).unwrap();
+    let a = doc.root();
+    let b = doc.children(a).next().unwrap();
+    let c = doc.children(b).next().unwrap();
+    let d = doc.children(c).next().unwrap();
+    doc.append_child(d, NodeBuilder::new("e").attr("y", "2")).unwrap();
+    let out = String::from_utf8(doc.to_bytes()).unwrap();
+    assert_eq!(
+        out,
+        "<a>\n  <b>\n    <c>\n      <d x=\"1\">\n        <e y=\"2\"/>\n      </d>\n    </c>\n  </b>\n</a>\n"
+    );
+}

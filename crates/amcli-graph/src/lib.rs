@@ -177,6 +177,31 @@ impl<'m> Graph<'m> {
                 None => g.dangling.push(id),
             }
         }
+
+        // A box drawn inside another box stands for the relationship between
+        // the two, and Archi draws no line for it. So a relationship whose
+        // ends a view nests is on that view, line or no line — otherwise every
+        // nested drawing reports its containments as drawn nowhere.
+        for (view, _) in model.views_with_ids() {
+            for (outer, inner) in model.view_nestings(view) {
+                let (Some(o), Some(i)) = (model.concept_by_id(&outer), model.concept_by_id(&inner))
+                else {
+                    continue;
+                };
+                let between: Vec<ConceptId> = g.out[o.0 as usize]
+                    .iter()
+                    .filter(|a| a.other == i)
+                    .chain(g.out[i.0 as usize].iter().filter(|a| a.other == o))
+                    .map(|a| a.rel)
+                    .collect();
+                for rel in between {
+                    let seen = &mut g.on_views[rel.0 as usize];
+                    if !seen.contains(&view) {
+                        seen.push(view);
+                    }
+                }
+            }
+        }
         g
     }
 

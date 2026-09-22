@@ -88,6 +88,16 @@ pub enum FolderCmd {
     },
     /// Delete an empty folder. Refuses if it holds anything.
     Delete { path: String },
+    /// Rename a folder. Its id and everything in it stay as they are.
+    Rename { path: String, name: String },
+    /// Re-file a folder, with everything in it, under another folder of the
+    /// same tree.
+    Move {
+        path: String,
+        /// The folder to move it under, e.g. /Views/Programme.
+        #[arg(short = 'p', long)]
+        parent: String,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -432,6 +442,33 @@ fn folder(opts: &Opts, m: &mut Model, cmd: &FolderCmd) -> Result<Output, CliErro
             let full = m.folder(f).path.clone();
             m.delete_folder(f).map_err(invalid)?;
             written(m, opts, Row::new().s("path", full))
+        }
+        FolderCmd::Rename { path, name } => {
+            let f = folder_id(m, path)?;
+            let from = m.folder(f).path.clone();
+            m.rename_folder(f, name).map_err(invalid)?;
+            written(
+                m,
+                opts,
+                Row::new()
+                    .s("from", from)
+                    .s("path", m.folder(f).path.clone())
+                    .s("id", m.folder(f).id.clone()),
+            )
+        }
+        FolderCmd::Move { path, parent } => {
+            let f = folder_id(m, path)?;
+            let p = folder_id(m, parent)?;
+            let from = m.folder(f).path.clone();
+            m.move_folder(f, p).map_err(invalid)?;
+            written(
+                m,
+                opts,
+                Row::new()
+                    .s("from", from)
+                    .s("path", m.folder(f).path.clone())
+                    .s("id", m.folder(f).id.clone()),
+            )
         }
     }
 }

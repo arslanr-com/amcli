@@ -2689,3 +2689,214 @@ fn an_ambiguous_discovery_names_the_model_beside_the_batch() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+/// Renaming a folder used to take three commands — make the new one, move
+/// every view, delete the old one — which gave the folder a new id and moved
+/// every view's bytes: a four-thousand-line diff for one word. `folder rename`
+/// changes one attribute, and `folder move` re-files a folder whole.
+#[test]
+fn a_folder_is_renamed_in_place_and_moved_with_its_contents() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["folder", "add", "/Views", "Alpha"]).0, 0);
+    assert_eq!(m.run(&["folder", "add", "/Views/Alpha", "Inner"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "V", "-f", "/Views/Alpha/Inner"]).0, 0);
+    assert_eq!(m.run(&["view", "add", "V", "BA1"]).0, 0);
+    let id_of = |path: &str| -> String {
+        let (_, out, _) = m.run(&["folder", "list", "-q"]);
+        rows(&out).iter().find(|r| r[0] == path).map(|r| r[2].to_string()).unwrap_or_default()
+    };
+    let id = id_of("/Views/Alpha/Inner");
+    assert!(!id.is_empty());
+
+    let before = m.text();
+    let (code, out, err) = m.run(&["folder", "rename", "/Views/Alpha/Inner", "Beta"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("/Views/Alpha/Beta"), "{out}");
+    assert_eq!(id_of("/Views/Alpha/Beta"), id, "the id survives a rename");
+    let after = m.text();
+    let changed: Vec<&str> = after.lines().filter(|l| !before.lines().any(|b| b == *l)).collect();
+    assert_eq!(changed.len(), 1, "one line changes: the folder's own: {changed:?}");
+    assert!(changed[0].contains(r#"name="Beta""#), "{changed:?}");
+    let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name,folder"]);
+    assert!(out.contains("/Views/Alpha/Beta"), "the view is filed under the new name: {out}");
+
+    // Moved under the views root, with the view inside it.
+    let (code, _, err) = m.run(&["folder", "move", "/Views/Alpha/Beta", "--parent", "/Views"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(id_of("/Views/Beta"), id);
+    let (_, out, _) = m.run(&["view", "list", "-q", "--fields", "name,folder"]);
+    assert!(out.contains("V\t/Views/Beta"), "{out}");
+
+    // Never out of its tree, never the top folders, never into itself.
+    let (code, _, err) = m.run(&["folder", "move", "/Views/Beta", "--parent", "/Business"]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("stays inside the top-level folder"), "{err}");
+    let (code, _, err) = m.run(&["folder", "rename", "/Views", "Drawings"]);
+    assert_eq!(code, 5, "{err}");
+    assert_eq!(m.run(&["folder", "add", "/Views/Beta", "Deep"]).0, 0);
+    let (code, _, err) = m.run(&["folder", "move", "/Views/Beta", "--parent", "/Views/Beta/Deep"]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("inside it"), "{err}");
+
+    // And in a batch.
+    let ops = m.dir.path().join("f.jsonl");
+    std::fs::write(
+        &ops,
+        "{\"op\":\"folder.rename\",\"path\":\"/Views/Beta\",\"name\":\"Gamma\"}\n\
+         {\"op\":\"folder.move\",\"path\":\"/Views/Gamma/Deep\",\"parent\":\"/Views\"}\n",
+    )
+    .unwrap();
+    let (code, _, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(id_of("/Views/Gamma"), id);
+    assert!(!id_of("/Views/Deep").is_empty());
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// A box drawn inside another box is how Archi shows the relationship
+/// between them, and it draws no line for it. So `view add --into` nests,
+/// the relationship counts as on the view, nothing is drawn between the two,
+/// and `view nest` does what dragging a box into another does in Archi.
+#[test]
+fn a_box_nested_in_another_stands_for_the_relationship_between_them() {
+    let m = Model::new("modelimporter_test.archimate");
+    for n in ["Outer", "Inner", "Third"] {
+        assert_eq!(m.run(&["element", "add", "ApplicationComponent", n]).0, 0);
+    }
+    assert_eq!(m.run(&["relation", "add", "Composition", "Outer", "Inner"]).0, 0);
+    assert_eq!(m.run(&["relation", "add", "Serving", "Outer", "Third"]).0, 0);
+    assert_eq!(m.run(&["view", "create", "V"]).0, 0);
+    assert_eq!(m.run(&["view", "add", "V", "Outer"]).0, 0);
+    let (code, out, err) = m.run(&["view", "add", "V", "Inner", "--into", "Outer"]);
+    assert_eq!(code, 0, "{err}");
+    let row = rows(&out).remove(0);
+    assert!(row.last().unwrap().starts_with("id-"), "the row names the container: {out}");
+    assert_eq!(row[4], "0", "no line is drawn to the container: {out}");
+    assert_eq!(m.run(&["view", "add", "V", "Third"]).0, 0);
+
+    // The file nests the box and keeps Archi's order inside an object:
+    // bounds, the lines leaving it, then what it holds.
+    let text = m.text();
+    let view = text.find(r#"name="V""#).unwrap();
+    let block = &text[view..];
+    let outer = block.find(r#"<child xsi:type="archimate:DiagramObject""#).unwrap();
+    let block = &block[outer..];
+    let bounds = block.find("<bounds").unwrap();
+    let conn = block.find("<sourceConnection").unwrap();
+    let inner = 1 + block[1..].find(r#"<child xsi:type="archimate:DiagramObject""#).unwrap();
+    let close = block.find("</child>").unwrap();
+    assert!(bounds < conn && conn < inner && inner < close, "bounds, connection, nested child");
+    // Whole lines, from the view on: the block above starts mid-line.
+    let mut object_lines =
+        text[view..].lines().filter(|l| l.contains("archimateElement") && l.contains("<child"));
+    let outer_line = object_lines.next().unwrap();
+    let inner_line = object_lines.next().unwrap();
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    assert_eq!(indent(inner_line), indent(outer_line) + 2, "nested one level deeper");
+
+    // On the view, by nesting: nothing is drawn nowhere.
+    let (_, out, _) = m.run(&["query", "kind=relation and views=0", "--count", "-q"]);
+    assert_eq!(out.trim(), "0", "{out}");
+    let (_, out, _) = m.run(&["view", "render", "V", "--as", "json", "-q"]);
+    assert_eq!(out.matches(r#""concept":"#).count(), 3);
+    assert_eq!(out.matches(r#""relationship":"#).count(), 1, "one line: Outer serves Third");
+
+    // A relationship added later between the two is not drawn either — the
+    // nesting already says it — and still counts as on the view.
+    let (code, out, err) = m.run(&["relation", "add", "Flow", "Inner", "Outer"]);
+    assert_eq!(code, 0, "{err}");
+    let _ = out;
+    let (_, out, _) = m.run(&["query", "kind=relation and views=0", "--count", "-q"]);
+    assert_eq!(out.trim(), "0", "{out}");
+    let (_, out, _) = m.run(&["get", "Inner", "-F", "json", "-q"]);
+    assert!(out.contains(r#""views":[{"#), "get lists the view it is nested on: {out}");
+
+    // Un-nested, the lines come back on `sync`; nested again, they go.
+    assert_eq!(m.run(&["view", "nest", "V", "Inner"]).0, 0);
+    let (code, out, err) = m.run(&["view", "sync", "V"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("\t2\t") || rows(&out)[0][2] == "2", "two lines drawn: {out}");
+    let (code, out, err) = m.run(&["view", "nest", "V", "Inner", "--into", "Outer"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(rows(&out)[0][2], "2", "both lines removed: {out}");
+    assert!(err.contains("nesting now stands for them"), "{err}");
+    let (_, out, _) = m.run(&["view", "render", "V", "--as", "json", "-q"]);
+    assert_eq!(out.matches(r#""relationship":"#).count(), 1);
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// Groups, notes and nesting are exported as the batch that rebuilds them,
+/// and the rebuild is byte-identical — so a nested drawing amcli made can be
+/// reviewed and regenerated like a flat one.
+#[test]
+fn nested_views_with_groups_and_notes_round_trip_through_export_views() {
+    let m = Model::new("modelimporter_test.archimate");
+    for stale in ["View 1", "View 2"] {
+        assert_eq!(m.run(&["view", "delete", stale, "-y"]).0, 0);
+    }
+    let seed = ["--id-seed", "nested"];
+    let seeded = |args: &[&str]| -> (i32, String, String) {
+        let mut all = args.to_vec();
+        all.extend_from_slice(&seed);
+        m.run(&all)
+    };
+    for n in ["Outer", "Inner", "Aside"] {
+        assert_eq!(seeded(&["element", "add", "ApplicationComponent", n]).0, 0);
+    }
+    assert_eq!(seeded(&["relation", "add", "Composition", "Outer", "Inner"]).0, 0);
+    assert_eq!(seeded(&["relation", "add", "Serving", "Aside", "Inner"]).0, 0);
+    assert_eq!(seeded(&["view", "create", "N"]).0, 0);
+    let (code, out, err) = seeded(&["view", "group", "N", "Zone"]);
+    assert_eq!(code, 0, "{err}");
+    let zone = rows(&out)[0][0].to_string();
+    assert_eq!(seeded(&["view", "add", "N", "Outer", "--into", "Zone"]).0, 0);
+    assert_eq!(seeded(&["view", "add", "N", "Inner", "--into", "Outer"]).0, 0);
+    assert_eq!(seeded(&["view", "add", "N", "Aside"]).0, 0);
+    let (code, _, err) = seeded(&["view", "note", "N", "Read me first", "--into", &zone]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(seeded(&["view", "layout", "N", "--relayout-all"]).0, 0);
+
+    // Laid out, every box sits inside what holds it.
+    let (_, out, _) = m.run(&["view", "render", "N", "--as", "json", "-q"]);
+    let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+    let nodes = json["nodes"].as_array().unwrap();
+    let rect = |label: &str| -> (i64, i64, i64, i64) {
+        let n = nodes.iter().find(|n| n["label"] == label).unwrap_or_else(|| panic!("{label}"));
+        (
+            n["x"].as_i64().unwrap(),
+            n["y"].as_i64().unwrap(),
+            n["w"].as_i64().unwrap(),
+            n["h"].as_i64().unwrap(),
+        )
+    };
+    let inside = |(x, y, w, h): (i64, i64, i64, i64), (px, py, pw, ph): (i64, i64, i64, i64)| {
+        x >= px && y >= py && x + w <= px + pw && y + h <= py + ph
+    };
+    assert!(inside(rect("Outer"), rect("Zone")), "Outer in Zone: {out}");
+    assert!(inside(rect("Inner"), rect("Outer")), "Inner in Outer: {out}");
+    assert!(inside(rect("Read me first"), rect("Zone")), "the note in Zone: {out}");
+    assert_eq!(
+        json["edges"].as_array().unwrap().len(),
+        1,
+        "Aside serves Inner; the composition is the nesting"
+    );
+
+    let spec = m.dir.path().join("views.jsonl");
+    assert_eq!(m.run(&["export", "views", "-o", spec.to_str().unwrap()]).0, 0);
+    let text = std::fs::read_to_string(&spec).unwrap();
+    assert!(text.contains(r#""op":"view.group","view":"N","name":"Zone","ref":"g1""#), "{text}");
+    assert!(text.contains(r#""target":"Outer","into":"ref:g1""#), "{text}");
+    assert!(text.contains(r#""target":"Inner","into":"Outer""#), "{text}");
+    assert!(
+        text.contains(r#""op":"view.note","view":"N","text":"Read me first","into":"ref:g1""#),
+        "{text}"
+    );
+    assert!(!text.contains("not rebuilt"), "everything on the view is rebuilt: {text}");
+
+    let before = m.text();
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    assert_eq!(first_difference(&before, &m.text()), None, "one round trip changes nothing");
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    assert_eq!(first_difference(&before, &m.text()), None, "and neither does a second");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}

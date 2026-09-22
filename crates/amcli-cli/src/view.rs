@@ -36,6 +36,12 @@ pub enum ViewCmd {
     Add {
         view: String,
         selector: String,
+        /// Draw it inside this object: a concept already on the view, a
+        /// group's name, or an object id. The container grows to hold it,
+        /// and no line is drawn between the two — the nesting says it.
+        #[arg(long)]
+        into: Option<String>,
+        /// Position; inside a container, relative to it.
         #[arg(long)]
         x: Option<i32>,
         #[arg(long)]
@@ -44,6 +50,53 @@ pub enum ViewCmd {
         #[arg(long)]
         no_connect: bool,
     },
+    /// Put a Group — a titled box that holds other objects and stands for
+    /// no concept — on a view.
+    Group {
+        view: String,
+        name: String,
+        /// Draw it inside this object, as `view add --into` does.
+        #[arg(long)]
+        into: Option<String>,
+        #[arg(long)]
+        x: Option<i32>,
+        #[arg(long)]
+        y: Option<i32>,
+        #[arg(long)]
+        width: Option<i32>,
+        #[arg(long)]
+        height: Option<i32>,
+    },
+    /// Put a Note — free text on the canvas — on a view, or with `--object`
+    /// replace the text of one already there (`""` removes the text).
+    Note {
+        view: String,
+        text: String,
+        #[arg(long)]
+        into: Option<String>,
+        #[arg(long)]
+        x: Option<i32>,
+        #[arg(long)]
+        y: Option<i32>,
+        /// The id of a note already on the view whose text this replaces.
+        #[arg(long)]
+        object: Option<String>,
+    },
+    /// Move an object already on the view inside another one, or with no
+    /// `--into` back to the top. It keeps its place on the canvas, and a
+    /// line between it and its new container is removed: the nesting
+    /// stands for it, exactly as when a box is dragged into another in Archi.
+    Nest {
+        view: String,
+        /// A concept on the view, a group's name, or an object id.
+        target: String,
+        #[arg(long)]
+        into: Option<String>,
+    },
+    /// Draw every relationship the model holds between two members of the
+    /// view that the view does not show yet. What the nesting already says
+    /// is not drawn.
+    Sync { view: String },
     /// Build a view from a concept and its neighbourhood, laid out and wired up.
     Auto {
         name: String,
@@ -120,9 +173,17 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
         ViewCmd::Create { name, viewpoint, folder, replace } => {
             create(opts, m, name, viewpoint.as_deref(), folder.as_deref(), *replace)
         }
-        ViewCmd::Add { view, selector, x, y, no_connect } => {
-            add(opts, m, view, selector, *x, *y, !*no_connect)
+        ViewCmd::Add { view, selector, into, x, y, no_connect } => {
+            add(opts, m, view, selector, into.as_deref(), *x, *y, !*no_connect)
         }
+        ViewCmd::Group { view, name, into, x, y, width, height } => {
+            group(opts, m, view, name, into.as_deref(), *x, *y, *width, *height)
+        }
+        ViewCmd::Note { view, text, into, x, y, object } => {
+            note(opts, m, view, text, into.as_deref(), *x, *y, object.as_deref())
+        }
+        ViewCmd::Nest { view, target, into } => nest(opts, m, view, target, into.as_deref()),
+        ViewCmd::Sync { view } => sync(opts, m, view),
         ViewCmd::Auto { name, from, depth, direction, layout, viewpoint, folder, replace } => auto(
             opts,
             m,
@@ -577,12 +638,123 @@ fn induced_connections(
     out
 }
 
+/// The room a container leaves above its children: a group's tab and its
+/// name, or an element's name across the top of its box.
+fn container_header(figure: Figure) -> i32 {
+    match figure {
+        Figure::Tabbed => amcli_view::geometry::GROUP_HEADER + 30,
+        _ => 40,
+    }
+}
+
+/// The margin inside a container, and between a container's edge and what
+/// it holds.
+const CONTAINER_PAD: i32 = amcli_view::layout::GRID;
+
+/// An object on the view named by the caller: an object id, a group's name,
+/// or a concept that is drawn there.
+fn find_object(m: &Model, scene: &amcli_view::Scene, sel: &str) -> Result<String, CliError> {
+    let bare = sel.strip_prefix("id:").unwrap_or(sel);
+    if let Some(n) = scene.nodes.iter().find(|n| n.id == bare) {
+        return Ok(n.id.clone());
+    }
+    if let Some(n) = scene
+        .nodes
+        .iter()
+        .find(|n| matches!(n.figure, Figure::Tabbed) && n.concept_id.is_none() && n.label == sel)
+    {
+        return Ok(n.id.clone());
+    }
+    let c = resolve(m, sel)?;
+    let concept_id = m.concept(c).id.as_str();
+    scene
+        .nodes
+        .iter()
+        .find(|n| n.concept_id.as_deref() == Some(concept_id))
+        .map(|n| n.id.clone())
+        .ok_or_else(|| {
+            CliError::new(
+                Code::NotFound,
+                "not_found",
+                format!("`{}` is not on view `{}`", m.concept(c).name, scene.view_name),
+            )
+            .hint("`amcli view add` it first, or name a group or an object id")
+        })
+}
+
+/// Where a new box of `w`×`h` goes: clear of everything at the top of the
+/// view, or, inside a container, clear of the container's other children
+/// and below its header, in the container's own coordinates. A container
+/// too small for the new box is widened or deepened to hold it, and the
+/// new size comes back with the slot.
+fn slot_for_new(
+    scene: &amcli_view::Scene,
+    parent: Option<&str>,
+    w: i32,
+    h: i32,
+    at: (Option<i32>, Option<i32>),
+) -> (Rect, Option<(String, i32, i32)>) {
+    let Some(p) = parent else {
+        let taken: Vec<Rect> =
+            scene.nodes.iter().filter(|n| n.parent_id.is_none()).map(|n| n.abs).collect();
+        return (
+            match at {
+                (Some(x), Some(y)) => Rect { x, y, w, h },
+                _ => free_slot(&taken, w, h),
+            },
+            None,
+        );
+    };
+    let container = scene.nodes.iter().find(|n| n.id == p).expect("resolved above");
+    let (ox, oy) = (CONTAINER_PAD, container_header(container.figure));
+    // Siblings, relative to the container's content origin.
+    let taken: Vec<Rect> = scene
+        .nodes
+        .iter()
+        .filter(|n| n.parent_id.as_deref() == Some(p))
+        .map(|n| Rect {
+            x: n.abs.x - container.abs.x - ox,
+            y: n.abs.y - container.abs.y - oy,
+            w: n.abs.w,
+            h: n.abs.h,
+        })
+        .collect();
+    let slot = match at {
+        (Some(x), Some(y)) => Rect { x, y, w, h },
+        _ => {
+            let s = free_slot(&taken, w, h);
+            Rect { x: s.x + ox, y: s.y + oy, w, h }
+        }
+    };
+    let need_w = slot.x + slot.w + CONTAINER_PAD;
+    let need_h = slot.y + slot.h + CONTAINER_PAD;
+    let grown = (need_w > container.abs.w || need_h > container.abs.h)
+        .then(|| (p.to_string(), need_w.max(container.abs.w), need_h.max(container.abs.h)));
+    (slot, grown)
+}
+
+/// Widen or deepen a container so that what was just put in it fits.
+fn grow(m: &mut Model, v: ViewId, grown: &Option<(String, i32, i32)>) -> Result<(), CliError> {
+    let Some((id, w, h)) = grown else { return Ok(()) };
+    let scene = amcli_view::compile(m, v);
+    let n = scene.nodes.iter().find(|n| n.id == *id).expect("the container is on the view");
+    let (px, py) = n
+        .parent_id
+        .as_deref()
+        .and_then(|p| scene.nodes.iter().find(|q| q.id == p))
+        .map(|q| (q.abs.x, q.abs.y))
+        .unwrap_or((0, 0));
+    m.set_view_object_rect(v, id, n.abs.x - px, n.abs.y - py, Some((*w, *h)))
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))
+}
+
 #[allow(clippy::too_many_arguments)] // one parameter per CLI flag
 fn add(
     opts: &Opts,
     m: &mut Model,
     view: &str,
     sel: &str,
+    into: Option<&str>,
     x: Option<i32>,
     y: Option<i32>,
     connect: bool,
@@ -592,6 +764,7 @@ fn add(
     let note = viewpoint_note(m, v, c);
 
     let scene = amcli_view::compile(m, v);
+    let parent = into.map(|p| find_object(m, &scene, p)).transpose()?;
     // A concept already on the view stays as it is: a second box for the
     // same element is what a re-run "refresh" used to leave behind, and
     // nothing flagged it. The relationships it can draw are still drawn, so
@@ -610,13 +783,10 @@ fn add(
             };
             // Placed clear of everything already there, so adding one object
             // never disturbs the rest of the diagram.
-            let taken: Vec<Rect> = scene.nodes.iter().map(|n| n.abs).collect();
-            let slot = match (x, y) {
-                (Some(x), Some(y)) => Rect { x, y, w, h },
-                _ => free_slot(&taken, w, h),
-            };
+            let (slot, grown) = slot_for_new(&scene, parent.as_deref(), w, h, (x, y));
+            grow(m, v, &grown)?;
             let id = m
-                .add_view_object(v, c, slot.x, slot.y, slot.w, slot.h)
+                .add_view_object_in(v, c, parent.as_deref(), slot.x, slot.y, slot.w, slot.h)
                 .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
             (id, slot, true)
         }
@@ -631,6 +801,8 @@ fn add(
         }
     }
 
+    // `into` is appended, never inserted: a column in the middle repoints
+    // every `cut -f5` already written against this row.
     let row = Row::new()
         .s("object", id)
         .s("concept", m.concept(c).id.clone())
@@ -638,7 +810,8 @@ fn add(
         .n("y", slot.y as i64)
         .n("connections", drawn)
         .b("added", added)
-        .b("dry_run", opts.dry_run);
+        .b("dry_run", opts.dry_run)
+        .s("into", parent.clone().unwrap_or_default());
     let out = finish(opts, m, row)?;
     let out = match note {
         Some(n) => out.note(n),
@@ -656,6 +829,163 @@ fn add(
         ))
     } else {
         out
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // one parameter per CLI flag
+fn group(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    name: &str,
+    into: Option<&str>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<i32>,
+    height: Option<i32>,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let parent = into.map(|p| find_object(m, &scene, p)).transpose()?;
+    let (dw, dh) = fit_group_size(name);
+    let (w, h) = (
+        width.unwrap_or(dw.max(amcli_view::geometry::GROUP_SIZE.0)),
+        height.unwrap_or(dh.max(amcli_view::geometry::GROUP_SIZE.1)),
+    );
+    let (slot, grown) = slot_for_new(&scene, parent.as_deref(), w, h, (x, y));
+    grow(m, v, &grown)?;
+    let id = m
+        .add_view_group(v, name, parent.as_deref(), slot.x, slot.y, slot.w, slot.h)
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("object", id)
+        .s("name", name.to_string())
+        .s("into", parent.unwrap_or_default())
+        .n("x", slot.x as i64)
+        .n("y", slot.y as i64)
+        .n("width", slot.w as i64)
+        .n("height", slot.h as i64)
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+#[allow(clippy::too_many_arguments)] // one parameter per CLI flag
+fn note(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    text: &str,
+    into: Option<&str>,
+    x: Option<i32>,
+    y: Option<i32>,
+    object: Option<&str>,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    if let Some(obj) = object {
+        let id = find_object(m, &scene, obj)?;
+        let is_note = scene.nodes.iter().any(|n| n.id == id && matches!(n.figure, Figure::Note));
+        if !is_note {
+            return Err(CliError::new(Code::Invalid, "invalid", format!("`{obj}` is not a note")));
+        }
+        m.set_note_content(v, &id, text)
+            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+        let row = Row::new()
+            .s("object", id)
+            .n("chars", text.chars().count() as i64)
+            .b("dry_run", opts.dry_run);
+        return finish(opts, m, row);
+    }
+    let parent = into.map(|p| find_object(m, &scene, p)).transpose()?;
+    let (w, h) = fit_note_size(text);
+    let (slot, grown) = slot_for_new(&scene, parent.as_deref(), w, h, (x, y));
+    grow(m, v, &grown)?;
+    let id = m
+        .add_view_note(v, text, parent.as_deref(), slot.x, slot.y, slot.w, slot.h)
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let row = Row::new()
+        .s("object", id)
+        .s("into", parent.unwrap_or_default())
+        .n("x", slot.x as i64)
+        .n("y", slot.y as i64)
+        .n("chars", text.chars().count() as i64)
+        .b("dry_run", opts.dry_run);
+    finish(opts, m, row)
+}
+
+fn nest(
+    opts: &Opts,
+    m: &mut Model,
+    view: &str,
+    target: &str,
+    into: Option<&str>,
+) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let object = find_object(m, &scene, target)?;
+    let parent = into.map(|p| find_object(m, &scene, p)).transpose()?;
+    let removed = m
+        .nest_view_object(v, &object, parent.as_deref())
+        .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    // The container may be too small for what it now holds.
+    let scene = amcli_view::compile(m, v);
+    if let Some(p) = &parent
+        && let (Some(c), Some(n)) =
+            (scene.nodes.iter().find(|n| n.id == *p), scene.nodes.iter().find(|n| n.id == object))
+    {
+        let need_w = n.abs.x + n.abs.w - c.abs.x + CONTAINER_PAD;
+        let need_h = n.abs.y + n.abs.h - c.abs.y + CONTAINER_PAD;
+        if need_w > c.abs.w || need_h > c.abs.h {
+            grow(m, v, &Some((p.clone(), need_w.max(c.abs.w), need_h.max(c.abs.h))))?;
+        }
+    }
+    let row = Row::new()
+        .s("object", object)
+        .s("into", parent.unwrap_or_default())
+        .n("connections_removed", removed.len() as i64)
+        .b("dry_run", opts.dry_run);
+    let out = finish(opts, m, row)?;
+    Ok(if removed.is_empty() {
+        out
+    } else {
+        out.note(format!(
+            "{} line(s) between the object and its container were removed; the nesting now stands for them",
+            removed.len()
+        ))
+    })
+}
+
+fn sync(opts: &Opts, m: &mut Model, view: &str) -> Result<Output, CliError> {
+    let v = find_view(m, view)?;
+    let scene = amcli_view::compile(m, v);
+    let mut members: Vec<ConceptId> = Vec::new();
+    for n in &scene.nodes {
+        if let Some(c) = n.concept_id.as_deref().and_then(|c| m.concept_by_id(c))
+            && !members.contains(&c)
+        {
+            members.push(c);
+        }
+    }
+    let wire = induced_connections(m, v, &members);
+    let mut drawn = 0;
+    for (rel, src, tgt) in wire {
+        if m.add_view_connection(v, rel, &src, &tgt, &[]).is_ok() {
+            drawn += 1;
+        }
+    }
+    let row = Row::new()
+        .s("view", m.view(v).id.clone())
+        .n("members", members.len() as i64)
+        .n("connections", drawn)
+        .b("dry_run", opts.dry_run);
+    let out = finish(opts, m, row)?;
+    Ok(if drawn > 0 {
+        out.note(format!(
+            "drew {drawn} relationship(s) the view did not show; \
+             `amcli view layout {view} --relayout-all` will tidy the placement"
+        ))
+    } else {
+        out.note("the view already shows every relationship between its members")
     })
 }
 
@@ -782,6 +1112,24 @@ fn fallback_note(out: Output, asked: Algorithm, used: Algorithm) -> Output {
     out
 }
 
+/// The size a box comes back at when it is relaid: fitted to its label,
+/// unless it is a small figure — a junction is a circle whatever it is
+/// called — or a container, whose size is what it holds.
+fn relaid_size(n: &amcli_view::Node) -> (i32, i32) {
+    if n.abs.w >= 60 && n.abs.h >= 30 {
+        // A note and a group carry no type icon, so Archi leaves their
+        // text the whole box less its margin; an element loses the
+        // icon's width off both sides.
+        match n.figure {
+            Figure::Tabbed => fit_group_size(&n.label),
+            Figure::Note => fit_note_size(&n.label),
+            _ => fit_size(&n.label),
+        }
+    } else {
+        (n.abs.w, n.abs.h)
+    }
+}
+
 fn relayout(
     opts: &Opts,
     m: &mut Model,
@@ -789,100 +1137,162 @@ fn relayout(
     algorithm: &str,
     all: bool,
 ) -> Result<Output, CliError> {
+    use std::collections::HashMap;
     let v = find_view(m, view)?;
     let algo = parse_algorithm(algorithm)?;
 
+    let scene = amcli_view::compile(m, v);
+    let node_by_id: HashMap<&str, &amcli_view::Node> =
+        scene.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    // Each object's position in its own container's coordinates, which is
+    // what the file stores and what "never placed" is judged by.
+    let rel = |n: &amcli_view::Node| -> Rect {
+        let (px, py) = n
+            .parent_id
+            .as_deref()
+            .and_then(|p| node_by_id.get(p))
+            .map(|p| (p.abs.x, p.abs.y))
+            .unwrap_or((0, 0));
+        Rect { x: n.abs.x - px, y: n.abs.y - py, w: n.abs.w, h: n.abs.h }
+    };
+    // What each container holds, in document order. `None` is the view.
+    let mut kids: HashMap<Option<String>, Vec<usize>> = HashMap::new();
+    for (i, n) in scene.nodes.iter().enumerate() {
+        kids.entry(n.parent_id.clone()).or_default().push(i);
+    }
+
     // Only objects that have never been placed move, unless told otherwise.
     // Reflowing everything by default is how one added element turns into a
-    // four-hundred-line diff.
-    let scene = amcli_view::compile(m, v);
-    let movable: Vec<Item> = scene
-        .nodes
+    // four-hundred-line diff. A container is relaid when any of its own
+    // children has never been placed; the others stay as they are.
+    let mut containers: Vec<Option<String>> = kids
         .iter()
-        .filter(|n| all || (n.abs.x == 0 && n.abs.y == 0))
-        // The label has to come from the node being moved. Indexing the scene by
-        // the *filtered* position read some other node's name, which fed the
-        // wrong sort key into a layout that is otherwise deterministic.
-        // Every box being moved is also sized to its label. A box the user
-        // widened by hand is a box being relaid, and it comes back at the
-        // width its name needs; a junction and other small figures keep
-        // theirs.
-        .map(|n| {
-            let (w, h) = if n.abs.w >= 60 && n.abs.h >= 30 {
-                // A note and a group carry no type icon, so Archi leaves their
-                // text the whole box less its margin; an element loses the
-                // icon's width off both sides.
-                match n.figure {
-                    Figure::Tabbed => fit_group_size(&n.label),
-                    Figure::Note => fit_note_size(&n.label),
-                    _ => fit_size(&n.label),
-                }
-            } else {
-                (n.abs.w, n.abs.h)
-            };
-            Item { id: n.id.clone(), name: n.label.clone(), w, h }
+        .filter(|(_, ids)| {
+            all || ids.iter().any(|i| {
+                let r = rel(&scene.nodes[*i]);
+                r.x == 0 && r.y == 0
+            })
         })
+        .map(|(c, _)| c.clone())
         .collect();
-
-    if movable.is_empty() {
+    if containers.is_empty() {
         return Ok(Output::empty().note("nothing to move; pass --relayout-all to reflow the view"));
     }
+    // Deepest first, so a container's size is known before its own
+    // container is laid out around it.
+    let depth_of = |c: &Option<String>| {
+        c.as_deref().and_then(|id| node_by_id.get(id)).map(|n| n.depth + 1).unwrap_or(0)
+    };
+    containers.sort_by_key(|c| std::cmp::Reverse((depth_of(c), c.clone())));
 
-    // The edges between the objects being moved. Without them every layered
-    // relayout saw an edgeless graph, ranked everything at zero, and produced
-    // one enormous row — the layout was never given the chance to do its job.
-    let (edges, connections) = edges_between(m, v, &movable);
-    let placed = place(&movable, &edges, algo);
+    // The lines drawn on the view, each lifted to the pair of direct
+    // children of a container that its ends sit under. A line from deep
+    // inside one box to deep inside another is an edge between the two
+    // boxes at the level where they are siblings.
+    let connections = m.view_connections(v);
+    let lift = |obj: &str, container: &Option<String>| -> Option<String> {
+        let mut cur = obj.to_string();
+        loop {
+            let n = node_by_id.get(cur.as_str())?;
+            if n.parent_id == *container {
+                return Some(cur);
+            }
+            cur = n.parent_id.clone()?;
+        }
+    };
 
-    // The layout may have resized a box — to fit its label, or widened a hub
-    // so its many edges hang straight — so the size goes back as well as the
-    // position.
-    for (item, r) in movable.iter().zip(placed.rects.iter()) {
-        m.set_view_object_rect(v, &item.id, r.x, r.y, Some((r.w, r.h)))
-            .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+    let mut sizes: HashMap<String, (i32, i32)> = HashMap::new();
+    let mut moved = 0;
+    let mut edge_count = 0;
+    let mut used = algo;
+    let mut straighten: Vec<String> = Vec::new();
+    for container in &containers {
+        let ids = &kids[container];
+        // The label has to come from the node being moved. Indexing the
+        // scene by the *filtered* position read some other node's name,
+        // which fed the wrong sort key into a layout that is otherwise
+        // deterministic.
+        let items: Vec<Item> = ids
+            .iter()
+            .map(|i| {
+                let n = &scene.nodes[*i];
+                let (w, h) = match sizes.get(n.id.as_str()) {
+                    Some(s) => *s,
+                    None if kids.contains_key(&Some(n.id.clone())) => (n.abs.w, n.abs.h),
+                    None => relaid_size(n),
+                };
+                Item { id: n.id.clone(), name: n.label.clone(), w, h }
+            })
+            .collect();
+        let index: HashMap<&str, usize> =
+            items.iter().enumerate().map(|(i, it)| (it.id.as_str(), i)).collect();
+        // Without the edges every layered relayout saw an edgeless graph,
+        // ranked everything at zero, and produced one enormous row.
+        let mut edges: Vec<(usize, usize)> = Vec::new();
+        for (id, src, tgt) in &connections {
+            let (Some(a), Some(b)) = (lift(src, container), lift(tgt, container)) else { continue };
+            let (Some(&a), Some(&b)) = (index.get(a.as_str()), index.get(b.as_str())) else {
+                continue;
+            };
+            if a != b && !edges.contains(&(a, b)) && !edges.contains(&(b, a)) {
+                edges.push((a, b));
+            }
+            straighten.push(id.clone());
+        }
+        let placed = place(&items, &edges, algo);
+        if container.is_none() {
+            used = placed.algorithm;
+        }
+        // Inside a container the children sit below its header and inside
+        // its margin; at the top of the view the layout's origin is the
+        // canvas's.
+        let (ox, oy) = match container.as_deref().and_then(|c| node_by_id.get(c)) {
+            Some(c) => (CONTAINER_PAD, container_header(c.figure)),
+            None => (0, 0),
+        };
+        let min_x = placed.rects.iter().map(|r| r.x).min().unwrap_or(0);
+        let min_y = placed.rects.iter().map(|r| r.y).min().unwrap_or(0);
+        let (mut far_x, mut far_y) = (0, 0);
+        for (item, r) in items.iter().zip(placed.rects.iter()) {
+            let (x, y) = (r.x - min_x + ox, r.y - min_y + oy);
+            m.set_view_object_rect(v, &item.id, x, y, Some((r.w, r.h)))
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+            far_x = far_x.max(x + r.w);
+            far_y = far_y.max(y + r.h);
+        }
+        moved += items.len();
+        edge_count += edges.len();
+        // The container is sized to what it now holds: remembered for the
+        // layout of its own container, and written now in case that one is
+        // not being relaid.
+        if let Some(c) = container {
+            let size = (far_x + CONTAINER_PAD, far_y + CONTAINER_PAD);
+            sizes.insert(c.clone(), size);
+            let r = rel(node_by_id[c.as_str()]);
+            m.set_view_object_rect(v, c, r.x, r.y, Some(size))
+                .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
+        }
     }
-    // And every connection among them is straightened. Moving the boxes and
-    // leaving old bendpoints where they were drew each such line through
-    // whatever now sat on its former path; a relaid view has straight lines,
-    // and the layout is what keeps them off the boxes.
-    for (conn_id, _, _) in &connections {
+    // And every connection among what moved is straightened. Moving the
+    // boxes and leaving old bendpoints where they were drew each such line
+    // through whatever now sat on its former path; a relaid view has straight
+    // lines, and the layout is what keeps them off the boxes.
+    straighten.sort();
+    straighten.dedup();
+    for conn_id in &straighten {
         m.set_view_connection_bendpoints(v, conn_id, &[])
             .map_err(|e| CliError::new(Code::Invalid, "invalid", e.to_string()))?;
     }
 
     let row = Row::new()
         .s("view", m.view(v).id.clone())
-        .n("moved", movable.len() as i64)
-        .n("edges", edges.len() as i64)
-        .s("algorithm", placed.algorithm.as_str())
+        .n("moved", moved as i64)
+        .n("edges", edge_count as i64)
+        .n("containers", containers.iter().filter(|c| c.is_some()).count() as i64)
+        .s("algorithm", used.as_str())
         .b("dry_run", opts.dry_run);
     let out = finish(opts, m, row)?;
-    Ok(fallback_note(out, algo, placed.algorithm))
-}
-
-/// A connection on the view: its id, and its endpoints as indices into the
-/// items being laid out.
-type Connection = (String, usize, usize);
-
-/// The connections drawn among the given diagram objects, as index pairs into
-/// `items` — one edge per connection, in document order — with each
-/// connection's id and endpoints alongside so its routing can be written back.
-///
-/// Read from the view rather than from the model graph: what is drawn is the
-/// view's connections, and a concept placed twice on one view has two objects
-/// and two sets of lines.
-fn edges_between(m: &Model, v: ViewId, items: &[Item]) -> (Vec<(usize, usize)>, Vec<Connection>) {
-    let index: std::collections::HashMap<&str, usize> =
-        items.iter().enumerate().map(|(i, it)| (it.id.as_str(), i)).collect();
-    let mut edges = Vec::new();
-    let mut connections = Vec::new();
-    for (id, src, tgt) in m.view_connections(v) {
-        if let (Some(&a), Some(&b)) = (index.get(src.as_str()), index.get(tgt.as_str())) {
-            edges.push((a, b));
-            connections.push((id, a, b));
-        }
-    }
-    (edges, connections)
+    Ok(fallback_note(out, algo, used))
 }
 
 fn render(

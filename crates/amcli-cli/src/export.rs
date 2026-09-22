@@ -55,9 +55,13 @@ pub fn run(g: &Graph<'_>, format: &str, out_path: Option<&str>) -> Result<Output
 /// apply it, and the round trip is byte-identical because the ops are the ones
 /// that built the views in the first place.
 ///
-/// Only what `view.add` can put back is emitted. Notes, groups, nested objects
-/// and references to other views are counted in a comment rather than silently
-/// dropped, because a spec that looks complete and is not is worse than none.
+/// Boxes, groups and notes are emitted, nested as they are drawn: a `view.add`
+/// carries `into` when its box sits inside another, a group is a `view.group`
+/// line with a `ref` the objects inside it name, a note a `view.note`. What
+/// `apply` cannot put back — a reference to another view, an image — is
+/// counted in a comment rather than silently dropped, because a spec that
+/// looks complete and is not is worse than none. Colours, fonts and
+/// bendpoints are not carried either: a rebuilt view is laid out afresh.
 ///
 /// What a view says about itself travels too: the viewpoint on `view.create`
 /// and the documentation as a `view.doc` line — an export without the latter
@@ -99,6 +103,10 @@ fn views(m: &Model) -> String {
         ));
     }
 
+    // Group refs are numbered across the whole batch: a ref is bound for the
+    // batch, and two views reusing `g1` would have the second's objects
+    // nested in the first's group.
+    let group_count = &mut 0usize;
     for (id, folder) in ordered {
         let v = m.view(id);
         s.push('\n');
@@ -122,26 +130,55 @@ fn views(m: &Model) -> String {
             ));
         }
 
+        // How each object is named when something nested in it says `into`:
+        // a box by its concept, a group by the `ref` its own line bound.
+        // Objects `apply` cannot rebuild have no name, and what they hold is
+        // rebuilt at the top of the view rather than lost.
+        let mut handle: HashMap<String, String> = HashMap::new();
         let mut skipped = 0;
-        for (_, concept) in m.view_objects(id) {
-            let Some(concept_id) = concept else {
-                skipped += 1;
-                continue;
-            };
-            let Some(c) = m.concept_by_id(&concept_id).map(|i| m.concept(i)) else {
-                skipped += 1;
-                continue;
-            };
-            let target = if by_name.get(c.name.as_str()) == Some(&1) {
-                c.name.clone()
-            } else {
-                format!("id:{}", c.id)
-            };
-            s.push_str(&format!(
-                "{{\"op\":\"view.add\",\"view\":{},\"target\":{}}}\n",
-                json_str(&v.name),
-                json_str(&target)
-            ));
+        for obj in m.view_tree(id) {
+            let into = obj.parent.as_deref().and_then(|p| handle.get(p)).cloned();
+            let into_field =
+                into.map(|i| format!(",\"into\":{}", json_str(&i))).unwrap_or_default();
+            match obj.kind.as_str() {
+                "DiagramObject" => {
+                    let Some(c) = obj.concept.as_deref().and_then(|c| m.concept_by_id(c)) else {
+                        skipped += 1;
+                        continue;
+                    };
+                    let c = m.concept(c);
+                    let target = if by_name.get(c.name.as_str()) == Some(&1) {
+                        c.name.clone()
+                    } else {
+                        format!("id:{}", c.id)
+                    };
+                    s.push_str(&format!(
+                        "{{\"op\":\"view.add\",\"view\":{},\"target\":{}{into_field}}}\n",
+                        json_str(&v.name),
+                        json_str(&target)
+                    ));
+                    handle.insert(obj.id.clone(), target);
+                }
+                "Group" => {
+                    *group_count += 1;
+                    let reference = format!("g{group_count}");
+                    s.push_str(&format!(
+                        "{{\"op\":\"view.group\",\"view\":{},\"name\":{},\"ref\":{}{into_field}}}\n",
+                        json_str(&v.name),
+                        json_str(&obj.text),
+                        json_str(&reference)
+                    ));
+                    handle.insert(obj.id.clone(), format!("ref:{reference}"));
+                }
+                "Note" => {
+                    s.push_str(&format!(
+                        "{{\"op\":\"view.note\",\"view\":{},\"text\":{}{into_field}}}\n",
+                        json_str(&v.name),
+                        json_str(&obj.text)
+                    ));
+                }
+                _ => skipped += 1,
+            }
         }
         s.push_str(&format!(
             "{{\"op\":\"view.layout\",\"view\":{},\"relayout_all\":true}}\n",
@@ -149,8 +186,8 @@ fn views(m: &Model) -> String {
         ));
         if skipped > 0 {
             s.push_str(&format!(
-                "# {skipped} object(s) on this view are not ArchiMate elements (note, group, \
-                 nested object or a reference to another view) and are not rebuilt by this batch\n"
+                "# {skipped} object(s) on this view are references to other views, images or \
+                 boxes of unknown concepts, and are not rebuilt by this batch\n"
             ));
         }
     }

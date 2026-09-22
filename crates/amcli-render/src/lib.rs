@@ -226,6 +226,7 @@ fn node(s: &mut String, n: &Node, o: &Options) {
 fn shows_icon(n: &Node) -> bool {
     !matches!(n.figure, Figure::Note | Figure::Tabbed | Figure::Circle)
         && n.concept_id.is_some()
+        && n.icon_visible
         && n.abs.w >= ICON_RIGHT + ICON_BOX
         && n.abs.h >= ICON_TOP + ICON_BOX + 4
 }
@@ -278,9 +279,15 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
             r.y as f64 + GROUP_HEADER as f64 + ((r.h - GROUP_HEADER) as f64 - block) / 2.0
         }
         Figure::Note => r.y as f64 + pad,
+        // Where Archi's text position puts it: at the top, in the middle, or
+        // along the bottom of the figure.
         _ => {
             let block = lines.len() as f64 * line_h;
-            r.y as f64 + (r.h as f64 - block) / 2.0
+            match n.text_position {
+                0 => r.y as f64 + pad,
+                2 => (r.y + r.h) as f64 - pad - block,
+                _ => r.y as f64 + (r.h as f64 - block) / 2.0,
+            }
         }
     };
 
