@@ -361,6 +361,22 @@ fn flags_for(args: impl Iterator<Item = String>) -> Option<String> {
 }
 
 fn main() {
+    // Windows gives the main thread a one-megabyte stack, and every CLI test
+    // in CI died there with STATUS_STACK_OVERFLOW (0xC00000FD) on a routine
+    // run: the command enums and the batch machinery keep more on the stack
+    // than that. The work runs on a thread with room to spare, on every
+    // platform, so a build is the same build everywhere.
+    let worker = std::thread::Builder::new()
+        .name("amcli".into())
+        .stack_size(64 << 20)
+        .spawn(real_main)
+        .expect("spawn the worker thread");
+    if worker.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn real_main() {
     let cli = parse_or_hint();
     let Some(format) = Format::parse(&cli.format) else {
         eprintln!("error: unknown format `{}`; expected text, json or jsonl", cli.format);

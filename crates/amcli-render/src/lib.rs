@@ -312,8 +312,12 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     let usable = (box_w - 2.0 * inset).max(10.0);
     let per_char = font_size * 0.52;
     let max_chars = (usable / per_char).floor().max(1.0) as usize;
-    let lines = wrap(text, max_chars);
     let line_h = font_size * 1.25;
+    // Six lines is the cap for an ordinary box, whose text is allowed to run
+    // a little past its edges rather than vanish; a tall figure — a poster's
+    // note or legend — shows every line that fits its height.
+    let fits = ((r.h as f64 - 2.0 * pad) / line_h).floor().max(0.0) as usize;
+    let lines = wrap(text, max_chars, fits.max(6));
 
     let (anchor, tx) = match n.text_align {
         1 => ("start", r.x as f64 + pad),
@@ -360,8 +364,8 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
     }
 }
 
-fn wrap(text: &str, max_chars: usize) -> Vec<String> {
-    const MAX_LINES: usize = 6;
+fn wrap(text: &str, max_chars: usize, max_lines: usize) -> Vec<String> {
+    let max = max_lines;
     let mut out: Vec<String> = Vec::new();
     for paragraph in text.split('\n') {
         let mut line = String::new();
@@ -375,7 +379,7 @@ fn wrap(text: &str, max_chars: usize) -> Vec<String> {
                 out.push(std::mem::take(&mut line));
                 line = word.to_string();
             }
-            if out.len() >= MAX_LINES {
+            if out.len() >= max {
                 break;
             }
         }
@@ -383,8 +387,8 @@ fn wrap(text: &str, max_chars: usize) -> Vec<String> {
             out.push(line);
         }
     }
-    if out.len() > MAX_LINES {
-        out.truncate(MAX_LINES);
+    if out.len() > max {
+        out.truncate(max);
         if let Some(last) = out.last_mut() {
             last.push('…');
         }
