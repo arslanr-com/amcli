@@ -87,6 +87,19 @@ enum Op {
         #[serde(default)]
         if_present: bool,
     },
+    #[serde(rename = "element.retype")]
+    ElementRetype {
+        target: String,
+        #[serde(rename = "type")]
+        ty: String,
+    },
+    #[serde(rename = "element.merge")]
+    ElementMerge {
+        target: String,
+        into: String,
+        #[serde(default)]
+        drop_doc: bool,
+    },
     #[serde(rename = "prop.set")]
     PropSet { target: String, key: String, value: String },
     #[serde(rename = "prop.unset")]
@@ -175,6 +188,7 @@ enum Op {
         line_alpha: Option<String>,
         label: Option<String>,
         icon: Option<String>,
+        line_derived: Option<String>,
     },
     #[serde(rename = "view.route")]
     ViewRoute {
@@ -456,6 +470,28 @@ fn apply_one(
             // Named for what it deletes, it can insist on it instead.
             delete(m, refs, "relation.delete", target, *if_present, Some(true))
         }
+        Op::ElementRetype { target, ty } => {
+            let c = resolve(m, target, refs)?;
+            let to = ElementType::from_str(ty).ok_or_else(|| {
+                CliError::new(Code::Usage, "usage", format!("`{ty}` is not an element type"))
+            })?;
+            Ok(named("element.retype", crate::write::retype(m, c, to)?))
+        }
+        Op::ElementMerge { target, into, drop_doc } => {
+            let a = resolve(m, target, refs)?;
+            let b = resolve(m, into, refs)?;
+            let (aid, bid) = (m.concept(a).id.clone(), m.concept(b).id.clone());
+            let row = crate::write::merge(m, a, b, !drop_doc)?;
+            // A ref bound to the merged element names the survivor from here
+            // on: that is what the merge means, and the alternative is a
+            // later line failing on a concept this batch deleted on purpose.
+            for id in refs.values_mut() {
+                if *id == aid {
+                    *id = bid.clone();
+                }
+            }
+            Ok(named("element.merge", row))
+        }
         Op::PropSet { target, key, value } => {
             let c = resolve(m, target, refs)?;
             m.set_property(c, key, value)
@@ -567,6 +603,7 @@ fn apply_one(
             line_alpha,
             label,
             icon,
+            line_derived,
         } => {
             let target = deref_object(refs, target)?;
             let deferred = Opts { dry_run: true, yes: opts.yes, expect_checksum: None };
@@ -586,6 +623,7 @@ fn apply_one(
                 line_alpha: line_alpha.clone(),
                 label: label.clone(),
                 icon: icon.clone(),
+                line_derived: line_derived.clone(),
             };
             let out = crate::view::style(&deferred, m, view, &target, flags)?;
             let n = out.rows.len();
@@ -713,6 +751,13 @@ fn apply_one(
                 .s("path", m.folder(f).path.clone()))
         }
     }
+}
+
+/// A command's row with the op named first, as every batch row is.
+fn named(op: &'static str, row: Row) -> Row {
+    let mut named = Row::new().s("op", op);
+    named.0.extend(row.0);
+    named
 }
 
 /// An object on a view named in a batch: a `ref:` bound by an earlier

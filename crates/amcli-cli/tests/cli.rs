@@ -3350,3 +3350,248 @@ fn a_styled_view_is_exported_as_it_was_drawn_and_rebuilds_byte_for_byte() {
     assert_eq!(first_difference(&before, &m.text()), None, "and neither does a second");
     assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
 }
+
+/// A type chosen wrong is a type changed, not an element deleted and made
+/// again: the id, the relationships and every box stay, and the refusal —
+/// when a relationship would break the matrix — lists what to fix and
+/// writes nothing.
+#[test]
+fn retyping_an_element_keeps_its_id_relationships_and_views() {
+    let m = Model::new("modelimporter_test.archimate");
+    let before = m.text();
+
+    // BA1 is assigned to a BusinessRole, which a component may not be.
+    let (code, _, err) = m.run(&["element", "retype", "BA1", "ApplicationComponent"]);
+    assert_eq!(code, 5, "invalid: {err}");
+    assert!(err.contains("e3ae7a88-0a0e-4431-82af-c89405bd3196"), "the relationship: {err}");
+    assert!(err.contains("Assignment") && err.contains("BR1"), "its type and other end: {err}");
+    assert!(err.contains("Serving"), "what is permitted: {err}");
+    assert_eq!(m.text(), before, "a refusal writes nothing");
+    let (code, _, err) = m.run(&["element", "retype", "BA1", "AssignmentRelationship"]);
+    assert_eq!(code, 2, "{err}");
+    assert!(err.contains("relationship type"), "{err}");
+    let rel = "id:e3ae7a88-0a0e-4431-82af-c89405bd3196";
+    let (code, _, _) = m.run(&["element", "retype", rel, "BusinessActor"]);
+    assert_eq!(code, 5, "a relationship is not an element");
+
+    // Legal: one attribute changes, the user subfolder is kept, both views
+    // still draw it.
+    let (code, out, err) = m.run(&["element", "retype", "BR1", "BusinessInterface", "-q"]);
+    assert_eq!(code, 0, "{err}");
+    let row = rows(&out).remove(0);
+    assert_eq!(
+        &row[..6],
+        [
+            "bfb40b14-442f-4ba2-a7e3-c2339093692c",
+            "BR1",
+            "BusinessRole",
+            "BusinessInterface",
+            "/Business/Folder1",
+            "2"
+        ]
+    );
+    assert_eq!(
+        m.text(),
+        before.replace(
+            r#"xsi:type="archimate:BusinessRole" name="BR1""#,
+            r#"xsi:type="archimate:BusinessInterface" name="BR1""#
+        )
+    );
+
+    // Into another layer it is re-filed under that layer's top folder.
+    let (code, out, err) = m.run(&["element", "retype", "BR2", "ApplicationComponent", "-q"]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(rows(&out)[0][4], "/Application");
+    assert_eq!(rows(&out)[0][5], "1");
+    let after = m.text();
+    assert!(
+        after.contains(
+            r#"xsi:type="archimate:ApplicationComponent" name="BR2" id="97b99ae7-8742-4c92-a984-b2e6ea82fb07""#
+        ),
+        "{after}"
+    );
+    assert!(
+        after.contains(r#"archimateElement="97b99ae7-8742-4c92-a984-b2e6ea82fb07""#),
+        "its box stays"
+    );
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+}
+
+/// Two names for one thing become one, at the prompt: relationships and
+/// boxes move to the survivor, twins and would-be loops go, the words and
+/// properties are carried over, and the model still loads.
+#[test]
+fn merging_an_element_repoints_everything_and_deletes_it() {
+    let m = Model::new("modelimporter_test.archimate");
+    assert_eq!(m.run(&["element", "add", "ApplicationComponent", "Svc"]).0, 0);
+    // Repointed: BR2 – Svc. A twin of BR1 → BA1: BR2 → BA1. A loop-to-be:
+    // BR2 – BR1. Both of those are drawn on View 1.
+    for rel in [
+        ["Association", "BR2", "Svc"],
+        ["Serving", "BR1", "BA1"],
+        ["Serving", "BR2", "BA1"],
+        ["Association", "BR2", "BR1"],
+    ] {
+        let (code, _, err) = m.run(&["relation", "add", rel[0], rel[1], rel[2]]);
+        assert_eq!(code, 0, "{err}");
+    }
+    for (sel, k, v) in
+        [("BR2", "src", "notes-2026"), ("BR1", "src", "memo-2025"), ("BR2", "extra", "only")]
+    {
+        assert_eq!(m.run(&["prop", "set", sel, k, v]).0, 0);
+    }
+
+    // A refusal first: a DataObject cannot serve, so BR2 cannot become one.
+    let before = m.text();
+    assert_eq!(m.run(&["element", "add", "DataObject", "Record"]).0, 0);
+    let with_record = m.text();
+    let (code, _, err) = m.run(&["element", "merge", "BR2", "--into", "Record"]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("Serving") && err.contains("BA1"), "{err}");
+    assert_eq!(m.text(), with_record, "a refusal writes nothing");
+    assert_eq!(m.run(&["element", "delete", "Record", "-y"]).0, 0);
+    assert_eq!(m.text(), before);
+    let (code, _, err) = m.run(&["element", "merge", "BR1", "--into", "BR1"]);
+    assert_eq!(code, 5, "{err}");
+
+    let (code, out, err) = m.run(&["element", "merge", "BR2", "--into", "BR1"]);
+    assert_eq!(code, 0, "{err}");
+    let row = rows(&out).remove(0);
+    assert_eq!(
+        row,
+        [
+            "97b99ae7-8742-4c92-a984-b2e6ea82fb07",
+            "bfb40b14-442f-4ba2-a7e3-c2339093692c",
+            "1",
+            "2",
+            "1",
+            "View 1",
+            "false"
+        ],
+        "{out}"
+    );
+    let after = m.text();
+    assert!(!after.contains("97b99ae7-8742-4c92-a984-b2e6ea82fb07"), "gone entirely:\n{after}");
+    assert!(
+        after.contains("<documentation>BR1 Documentation\n\nBR2 Documentation</documentation>"),
+        "{after}"
+    );
+    assert!(after.contains(r#"<property key="supporting-source" value="notes-2026"/>"#), "{after}");
+    assert!(after.contains(r#"<property key="extra" value="only"/>"#), "{after}");
+    assert!(after.contains(r#"<property key="src" value="memo-2025"/>"#), "the survivor's value");
+    let (_, out, _) = m.run(&["neighbors", "BR1", "-q"]);
+    assert!(out.contains("Svc"), "the association was repointed: {out}");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+
+    // `--drop-doc` leaves the merged element's words behind.
+    assert_eq!(m.run(&["element", "add", "BusinessRole", "Third", "--doc", "Third words"]).0, 0);
+    let (code, _, err) = m.run(&["element", "merge", "Third", "--into", "BR1", "--drop-doc"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(!m.text().contains("Third words"));
+}
+
+/// Archi ignores an element's explicit line colour unless
+/// `deriveElementLineColor` is off, so a poster's borders need the feature
+/// and the export has to carry it for the rebuild to draw the same.
+#[test]
+fn a_border_colour_round_trips_through_export_and_apply_with_line_derived_off() {
+    let m = Model::new("modelimporter_test.archimate");
+    for stale in ["View 1", "View 2"] {
+        assert_eq!(m.run(&["view", "delete", stale, "-y"]).0, 0);
+    }
+    let seeded = |args: &[&str]| -> (i32, String, String) {
+        let mut all = args.to_vec();
+        all.extend_from_slice(&["--id-seed", "border"]);
+        m.run(&all)
+    };
+    assert_eq!(seeded(&["view", "create", "P"]).0, 0);
+    assert_eq!(seeded(&["view", "add", "P", "BA1", "--x", "20", "--y", "20", "--no-connect"]).0, 0);
+    let (code, out, err) =
+        seeded(&["view", "style", "P", "BA1", "--line", "#2563a6", "--line-derived", "no"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(rows(&out)[0][2].contains("deriveElementLineColor"), "{out}");
+    let text = m.text();
+    assert!(text.contains(r##"lineColor="#2563a6""##), "{text}");
+    assert!(text.contains(r#"<feature name="deriveElementLineColor" value="false"/>"#), "{text}");
+    let (code, _, err) = seeded(&["view", "style", "P", "BA1", "--line-derived", "maybe"]);
+    assert_eq!(code, 2, "{err}");
+
+    let spec = m.dir.path().join("border.jsonl");
+    assert_eq!(m.run(&["export", "views", "-o", spec.to_str().unwrap()]).0, 0);
+    let exported = std::fs::read_to_string(&spec).unwrap();
+    assert!(exported.contains(r##""line":"#2563a6","line_derived":"false""##), "{exported}");
+    let before = m.text();
+    assert_eq!(seeded(&["apply", spec.to_str().unwrap()]).0, 0);
+    assert_eq!(first_difference(&before, &m.text()), None, "one round trip changes nothing");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+
+    // `""` clears the feature and only the feature.
+    assert_eq!(seeded(&["view", "style", "P", "BA1", "--line-derived", ""]).0, 0);
+    let text = m.text();
+    assert!(
+        !text.contains("deriveElementLineColor") && text.contains(r##"lineColor="#2563a6""##),
+        "{text}"
+    );
+}
+
+/// The batch forms of the three: `element.retype`, `element.merge` — after
+/// which a ref to the merged element names the survivor — and
+/// `line_derived` on `view.style`.
+#[test]
+fn a_batch_retypes_merges_and_styles_the_border() {
+    let m = Model::new("modelimporter_test.archimate");
+    let ops = m.dir.path().join("ops.jsonl");
+    std::fs::write(
+        &ops,
+        concat!(
+            r#"{"op":"element.add","type":"BusinessRole","name":"Old","ref":"old"}"#,
+            "\n",
+            r#"{"op":"element.add","type":"BusinessRole","name":"New","ref":"new"}"#,
+            "\n",
+            r#"{"op":"relation.add","type":"Assignment","source":"BA1","target":"ref:old"}"#,
+            "\n",
+            r#"{"op":"element.retype","target":"ref:new","type":"BusinessInterface"}"#,
+            "\n",
+            r#"{"op":"element.merge","target":"ref:old","into":"ref:new"}"#,
+            "\n",
+            r#"{"op":"prop.set","target":"ref:old","key":"owner","value":"team-a"}"#,
+            "\n",
+            r##"{"op":"view.style","view":"View 1","target":"BA1","line":"#2563a6","line_derived":"false"}"##,
+            "\n",
+        ),
+    )
+    .unwrap();
+    let (code, out, err) = m.run(&["apply", ops.to_str().unwrap(), "-q"]);
+    assert_eq!(code, 0, "{err}");
+    let rows = rows(&out);
+    assert_eq!(&rows[3][..1], ["element.retype"]);
+    assert_eq!(&rows[3][3..5], ["BusinessRole", "BusinessInterface"]);
+    assert_eq!(&rows[4][..1], ["element.merge"]);
+    assert_eq!(&rows[4][3..6], ["1", "0", "0"], "the assignment was repointed: {out}");
+    let text = m.text();
+    assert!(!text.contains(r#"name="Old""#), "{text}");
+    assert!(
+        text.contains(r#"xsi:type="archimate:BusinessInterface" name="New""#),
+        "retyped: {text}"
+    );
+    assert!(
+        text.contains(r#"<property key="owner" value="team-a"/>"#),
+        "the ref followed the merge: {text}"
+    );
+    assert!(text.contains(r#"<feature name="deriveElementLineColor" value="false"/>"#), "{text}");
+    let (_, out, _) = m.run(&["neighbors", "New", "-q"]);
+    assert!(out.contains("BA1"), "the assignment now reaches New: {out}");
+    assert_eq!(m.run(&["validate", "--level", "integrity"]).0, 0);
+
+    // A refusal in a batch leaves the file as it was.
+    let before = m.text();
+    std::fs::write(
+        &ops,
+        "{\"op\":\"element.retype\",\"target\":\"BA1\",\"type\":\"ApplicationComponent\"}\n",
+    )
+    .unwrap();
+    let (code, _, err) = m.run(&["apply", ops.to_str().unwrap()]);
+    assert_eq!(code, 5, "{err}");
+    assert!(err.contains("line 1") && err.contains("Assignment"), "{err}");
+    assert_eq!(m.text(), before);
+}

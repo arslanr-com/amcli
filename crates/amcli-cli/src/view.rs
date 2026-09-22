@@ -144,6 +144,10 @@ pub enum ViewCmd {
         /// show | hide, the type icon.
         #[arg(long)]
         icon: Option<String>,
+        /// yes | no: whether an element's border is derived from its fill.
+        /// Archi ignores --line on an element unless this is no.
+        #[arg(long)]
+        line_derived: Option<String>,
     },
     /// Route a line through points on the canvas, or straighten it.
     Route {
@@ -293,6 +297,7 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
             line_alpha,
             label,
             icon,
+            line_derived,
         } => style(
             opts,
             m,
@@ -314,6 +319,7 @@ pub fn run(opts: &Opts, m: &mut Model, cmd: &ViewCmd) -> Result<Output, CliError
                 line_alpha: line_alpha.clone(),
                 label: label.clone(),
                 icon: icon.clone(),
+                line_derived: line_derived.clone(),
             },
         ),
         ViewCmd::Route { view, target, points } => route(opts, m, view, target, points),
@@ -1078,6 +1084,7 @@ pub struct StyleFlags {
     pub line_alpha: Option<String>,
     pub label: Option<String>,
     pub icon: Option<String>,
+    pub line_derived: Option<String>,
 }
 
 /// Every visual a style or route target names: one object, or every line
@@ -1214,6 +1221,13 @@ fn style_change(
         line_alpha: f.line_alpha.clone(),
         label: f.label.clone(),
         icon: word(&f.icon, "icon setting", &[("show", "1"), ("hide", "2"), ("default", "")])?,
+        // Archi's default is `true`, and it writes the feature only when
+        // `false` — the one value that lets an explicit line colour show.
+        line_derived: word(
+            &f.line_derived,
+            "line derivation",
+            &[("yes", "true"), ("no", "false")],
+        )?,
     })
 }
 

@@ -61,6 +61,18 @@ pub enum EditError {
     MixedJunction(String, &'static str),
     #[error("accessType must be 0 (write), 1 (read), 2 (unspecified) or 3 (read/write), not {0}")]
     BadAccessType(i64),
+    #[error("`{0}` is a relationship; only an element can be {1}")]
+    NotAnElement(String, &'static str),
+    #[error("`{0}` is a junction; a junction joins relationships of one type and cannot be {1}")]
+    JunctionFixed(String, &'static str),
+    #[error("`{0}` cannot be merged into itself")]
+    SameElement(String),
+    #[error(
+        "{} relationship(s) would break the ArchiMate matrix: {}",
+        .0.len(),
+        illegal_hint(.0)
+    )]
+    IllegalRelationships(Vec<IllegalRelationship>),
     #[error(transparent)]
     Model(#[from] ModelError),
     #[error(transparent)]
@@ -73,6 +85,56 @@ fn permitted_hint(p: &[&'static str]) -> String {
     } else {
         format!(" — permitted here: {}", p.join(", "))
     }
+}
+
+fn illegal_hint(list: &[IllegalRelationship]) -> String {
+    list.iter()
+        .map(|r| {
+            format!(
+                "{} `{}` {} {} `{}`{}",
+                r.rel,
+                r.id,
+                if r.direction == "out" { "to" } else { "from" },
+                r.other_type,
+                if r.other_name.is_empty() { &r.other } else { &r.other_name },
+                permitted_hint(&r.permitted)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+/// A relationship the matrix would refuse once one of its ends changed:
+/// an element retyped, or folded into another. What it is, which end would
+/// change, and what the matrix does permit for the pair it would then join.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IllegalRelationship {
+    pub id: String,
+    /// The relationship's type, bare.
+    pub rel: &'static str,
+    /// `out` when the changed element is the source, `in` when it is the
+    /// target.
+    pub direction: &'static str,
+    /// The end that is not changing: its id, name and type.
+    pub other: String,
+    pub other_name: String,
+    pub other_type: String,
+    /// Bare relationship types permitted between the pair as it would be.
+    pub permitted: Vec<&'static str>,
+}
+
+/// What a merge did, by id.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Merged {
+    /// Relationships repointed to the survivor.
+    pub relationships: Vec<String>,
+    /// Relationships deleted: a twin of one the survivor already had, or a
+    /// relationship between the two elements, which would have looped.
+    pub dropped: Vec<String>,
+    /// Diagram objects now showing the survivor.
+    pub objects: Vec<String>,
+    /// Names of the views that now show the survivor in more than one box.
+    pub duplicated_on: Vec<String>,
 }
 
 /// What a delete would take with it. Returned before anything is touched so a
@@ -723,6 +785,314 @@ fn display_name(c: &Concept) -> String {
     if c.name.is_empty() { c.id.clone() } else { c.name.clone() }
 }
 
+// ---- retyping and merging --------------------------------------------------
+
+impl Model {
+    /// The relationships that the matrix would refuse if `c` were of type
+    /// `to`. Empty means the retype is legal; nothing is changed either way.
+    ///
+    /// A relationship, a junction and a junction-to-be are refused outright:
+    /// the first is not an element, and a junction's one rule — every
+    /// relationship through it shares a type — is about the relationships,
+    /// not the element.
+    pub fn retype_check(
+        &self,
+        c: ConceptId,
+        to: ElementType,
+    ) -> Result<Vec<IllegalRelationship>, EditError> {
+        let e = self.concept(c);
+        if e.kind.is_relationship() {
+            return Err(EditError::NotAnElement(display_name(e), "retyped"));
+        }
+        if e.kind == ConceptKind::Element(ElementType::Junction) || to == ElementType::Junction {
+            return Err(EditError::JunctionFixed(display_name(e), "retyped"));
+        }
+        Ok(self.illegal_relationships(&e.id, to.info().matrix_idx, &|_| false))
+    }
+
+    /// Change an element's type in place: same id, name, documentation,
+    /// properties, relationships and diagram objects — only `xsi:type`
+    /// changes, and the element moves to the top-level folder Archi keeps
+    /// that type in when it is not already somewhere under it. Returns
+    /// whether it moved.
+    ///
+    /// Refused, with every relationship that would become illegal listed,
+    /// before anything is touched: the caller fixes those first. There is
+    /// deliberately no way to force it, because a relationship the standard
+    /// forbids is exactly what `validate` exists to catch.
+    pub fn retype(&mut self, c: ConceptId, to: ElementType) -> Result<bool, EditError> {
+        let illegal = self.retype_check(c, to)?;
+        if !illegal.is_empty() {
+            return Err(EditError::IllegalRelationships(illegal));
+        }
+        let home = self
+            .top_folder(to.info().home)
+            .ok_or_else(|| EditError::NoSuchFolder(to.info().home.as_str().to_string()))?;
+        let node = self.concept(c).node;
+        self.doc.set_attr(node, "xsi:type", to.info().xsi);
+        // A user subfolder under the right top folder is where the author
+        // filed it; only a folder of another tree is wrong for the new type.
+        let moved = self.top_of(self.concept(c).folder) != home;
+        if moved {
+            self.move_to_folder(c, home)?;
+        }
+        self.reindex();
+        Ok(moved)
+    }
+
+    /// The relationships that the matrix would refuse once every one of
+    /// `merged`'s stood at `into` instead. Empty means the merge is legal;
+    /// nothing is changed either way.
+    pub fn merge_check(
+        &self,
+        merged: ConceptId,
+        into: ConceptId,
+    ) -> Result<Vec<IllegalRelationship>, EditError> {
+        let (a, b) = (self.concept(merged), self.concept(into));
+        for e in [a, b] {
+            if e.kind.is_relationship() {
+                return Err(EditError::NotAnElement(display_name(e), "merged"));
+            }
+            if e.kind == ConceptKind::Element(ElementType::Junction) {
+                return Err(EditError::JunctionFixed(display_name(e), "merged"));
+            }
+        }
+        if merged == into {
+            return Err(EditError::SameElement(display_name(a)));
+        }
+        // An unknown survivor has no matrix row; as in `check_relationship`,
+        // that is a reason to let validation report it, not to block.
+        let Some(idx) = b.kind.matrix_idx() else { return Ok(Vec::new()) };
+        let (aid, bid) = (a.id.as_str(), b.id.as_str());
+        // A relationship between the two is deleted, not repointed, so it is
+        // not judged.
+        let between = |r: &Concept| {
+            let (s, t) = (r.source.as_deref(), r.target.as_deref());
+            (s == Some(aid) && t == Some(bid)) || (s == Some(bid) && t == Some(aid))
+        };
+        Ok(self.illegal_relationships(aid, idx, &between))
+    }
+
+    /// Every relationship touching `id` — except those `skip` says so of —
+    /// that the matrix would refuse once that end stood for a concept with
+    /// matrix index `idx`: the type it is being retyped to, or the survivor
+    /// it is being merged into. A self-loop has both ends replaced.
+    fn illegal_relationships(
+        &self,
+        id: &str,
+        idx: u8,
+        skip: &dyn Fn(&Concept) -> bool,
+    ) -> Vec<IllegalRelationship> {
+        let mut out = Vec::new();
+        for r in self.concepts() {
+            let ConceptKind::Relationship(ty) = &r.kind else { continue };
+            let (Some(s), Some(t)) = (r.source.as_deref(), r.target.as_deref()) else { continue };
+            if (s != id && t != id) || skip(r) {
+                continue;
+            }
+            let end_idx = |end: &str| {
+                if end == id {
+                    Some(idx)
+                } else {
+                    self.concept_by_id(end).and_then(|c| self.concept(c).kind.matrix_idx())
+                }
+            };
+            // An end this build does not know has no row to judge by.
+            let (Some(si), Some(ti)) = (end_idx(s), end_idx(t)) else { continue };
+            if matrix::allows(si, ti, *ty) {
+                continue;
+            }
+            let (direction, other) = if s == id { ("out", t) } else { ("in", s) };
+            let other_c = self.concept_by_id(other).map(|c| self.concept(c));
+            out.push(IllegalRelationship {
+                id: r.id.clone(),
+                rel: ty.info().short,
+                direction,
+                other: other.to_string(),
+                other_name: other_c.map(|c| c.name.clone()).unwrap_or_default(),
+                other_type: other_c.map(|c| c.kind.name().to_string()).unwrap_or_default(),
+                permitted: matrix::permitted(si, ti).iter().map(|r| r.info().short).collect(),
+            });
+        }
+        out
+    }
+
+    /// Fold `merged` into `into`, which means the same thing, and delete it.
+    ///
+    /// Every relationship at the merged element is repointed to the survivor.
+    /// One that would then be the twin of a relationship the survivor already
+    /// has — same type, same other end, same direction — is deleted instead,
+    /// and the lines that drew it are handed to the twin, so no drawing loses
+    /// a line over a duplicate. A relationship between the two elements
+    /// would become a self-loop and is deleted with its lines. Every box that
+    /// showed the merged element shows the survivor, exactly where it was and
+    /// styled as it was; a view that now shows the survivor twice is allowed,
+    /// as Archi allows it, and named in the result.
+    ///
+    /// The survivor keeps its documentation; the merged element's, when
+    /// `keep_doc` and it says something different, is appended as a new
+    /// paragraph. Properties the survivor lacks are copied and ones it has
+    /// keep its value — except `src` and `source`, whose differing values
+    /// are gathered into `supporting-source`, `;`-separated.
+    ///
+    /// Refused before anything changes when a repointed relationship would
+    /// break the matrix; the error lists each one.
+    pub fn merge_elements(
+        &mut self,
+        merged: ConceptId,
+        into: ConceptId,
+        keep_doc: bool,
+    ) -> Result<Merged, EditError> {
+        let illegal = self.merge_check(merged, into)?;
+        if !illegal.is_empty() {
+            return Err(EditError::IllegalRelationships(illegal));
+        }
+        let (aid, bid) = (self.concept(merged).id.clone(), self.concept(into).id.clone());
+        let (a_node, b_node) = (self.concept(merged).node, self.concept(into).node);
+        let mut done = Merged::default();
+
+        // Relationships. `held` is what the survivor has, including what this
+        // loop hands it, so two twins arriving together collapse to one.
+        let mut held: Vec<(RelType, String, String, String)> = self
+            .concepts()
+            .filter_map(|r| {
+                let ConceptKind::Relationship(ty) = &r.kind else { return None };
+                let (s, t) = (r.source.clone()?, r.target.clone()?);
+                (s == bid || t == bid).then(|| (*ty, s, t, r.id.clone()))
+            })
+            .collect();
+        let touching: Vec<ConceptId> = self
+            .concepts_with_ids()
+            .filter(|(_, r)| {
+                r.kind.is_relationship()
+                    && (r.source.as_deref() == Some(&aid) || r.target.as_deref() == Some(&aid))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        // Deleted once everything else is in place: (relationship, the twin
+        // its lines go to — none for a would-be self-loop).
+        let mut doomed: Vec<(ConceptId, Option<String>)> = Vec::new();
+        for r in touching {
+            let rc = self.concept(r);
+            let (Some(s), Some(t)) = (rc.source.clone(), rc.target.clone()) else { continue };
+            if (s == aid && t == bid) || (s == bid && t == aid) {
+                doomed.push((r, None));
+                continue;
+            }
+            let ns = if s == aid { bid.clone() } else { s };
+            let nt = if t == aid { bid.clone() } else { t };
+            let ty = match &rc.kind {
+                ConceptKind::Relationship(ty) => Some(*ty),
+                _ => None,
+            };
+            if let Some(ty) = ty
+                && let Some((_, _, _, twin)) =
+                    held.iter().find(|(k, hs, ht, _)| *k == ty && *hs == ns && *ht == nt)
+            {
+                doomed.push((r, Some(twin.clone())));
+                continue;
+            }
+            let (node, id) = (rc.node, rc.id.clone());
+            self.doc.set_attr(node, "source", &ns);
+            self.doc.set_attr(node, "target", &nt);
+            if let Some(ty) = ty {
+                held.push((ty, ns, nt, id.clone()));
+            }
+            done.relationships.push(id);
+        }
+
+        // Boxes: the object stays, with its bounds, style and connections;
+        // only what it stands for changes.
+        let views: Vec<(ViewId, String)> =
+            self.views_with_ids().map(|(v, view)| (v, view.name.clone())).collect();
+        for (v, name) in views {
+            let view_node = self.view(v).node;
+            let objects: Vec<NodeId> = self
+                .doc
+                .descendants(view_node)
+                .into_iter()
+                .filter(|n| self.doc.local_name(*n) == "child")
+                .collect();
+            let mut repointed = false;
+            for n in &objects {
+                if self.doc.attr(*n, "archimateElement").as_deref() == Some(&aid) {
+                    self.doc.set_attr(*n, "archimateElement", &bid);
+                    done.objects.extend(self.doc.attr(*n, "id"));
+                    repointed = true;
+                }
+            }
+            let shown = objects
+                .iter()
+                .filter(|n| self.doc.attr(**n, "archimateElement").as_deref() == Some(&bid))
+                .count();
+            if repointed && shown > 1 {
+                done.duplicated_on.push(name);
+            }
+        }
+
+        // A dropped twin's lines draw the twin that stays.
+        for (r, twin) in &doomed {
+            let Some(twin) = twin else { continue };
+            let dropped_id = self.concept(*r).id.clone();
+            let lines: Vec<NodeId> = self
+                .views()
+                .flat_map(|v| self.doc.descendants(v.node))
+                .filter(|n| {
+                    self.doc.local_name(*n) == "sourceConnection"
+                        && self.doc.attr(*n, "archimateRelationship").as_deref()
+                            == Some(&dropped_id)
+                })
+                .collect();
+            for n in lines {
+                self.doc.set_attr(n, "archimateRelationship", twin);
+            }
+        }
+
+        // Documentation and properties, before the merged node goes.
+        if keep_doc && let Some(extra) = self.documentation(a_node).filter(|d| !d.is_empty()) {
+            let own = self.documentation(b_node).unwrap_or_default();
+            if own != extra {
+                let text = if own.is_empty() { extra } else { format!("{own}\n\n{extra}") };
+                self.set_documentation_node(b_node, &text)?;
+            }
+        }
+        let mut ours = self.properties(b_node);
+        for (k, v) in self.properties(a_node) {
+            match ours.iter().find(|(ok, _)| *ok == k).map(|(_, ov)| ov.clone()) {
+                None => {
+                    self.set_property_node(b_node, &k, &v)?;
+                    ours.push((k, v));
+                }
+                Some(cur) if cur != v && (k == "src" || k == "source") => {
+                    let have = ours
+                        .iter()
+                        .find(|(ok, _)| ok == "supporting-source")
+                        .map(|(_, ov)| ov.clone())
+                        .unwrap_or_default();
+                    if have.split(';').any(|s| s == v) {
+                        continue;
+                    }
+                    let joined = if have.is_empty() { v } else { format!("{have};{v}") };
+                    self.set_property_node(b_node, "supporting-source", &joined)?;
+                    ours.retain(|(ok, _)| ok != "supporting-source");
+                    ours.push(("supporting-source".to_string(), joined));
+                }
+                Some(_) => {}
+            }
+        }
+
+        // The index still says the repointed relationships touch the merged
+        // element; rebuilt, the deletes below take only what they should.
+        self.reindex();
+        for (r, _) in doomed {
+            done.dropped.push(self.concept(r).id.clone());
+            self.delete_concept(r)?;
+        }
+        self.delete_concept(merged)?;
+        Ok(done)
+    }
+}
+
 // ---- styling ---------------------------------------------------------------
 
 /// A change to how one object or line on a view looks. `None` leaves a
@@ -751,6 +1121,10 @@ pub struct StyleChange {
     /// The `iconVisible` feature: `2` hides the type icon, `1` always
     /// shows it, empty is Archi's default.
     pub icon: Option<String>,
+    /// The `deriveElementLineColor` feature: `false` makes Archi draw an
+    /// element's explicit `lineColor`, which it otherwise ignores in favour
+    /// of a border derived from the fill; `true` or empty is that default.
+    pub line_derived: Option<String>,
 }
 
 /// What a visual on a view is, when a caller names one by id.
@@ -828,7 +1202,11 @@ impl Model {
             }
             touched.push(name);
         }
-        for (name, value) in [("labelExpression", &change.label), ("iconVisible", &change.icon)] {
+        for (name, value) in [
+            ("labelExpression", &change.label),
+            ("iconVisible", &change.icon),
+            ("deriveElementLineColor", &change.line_derived),
+        ] {
             let Some(v) = value else { continue };
             self.set_feature(node, name, v)?;
             touched.push(name);
@@ -883,6 +1261,7 @@ impl Model {
             line_alpha: a("lineAlpha"),
             label: feature("labelExpression"),
             icon: feature("iconVisible"),
+            line_derived: feature("deriveElementLineColor"),
         })
     }
 

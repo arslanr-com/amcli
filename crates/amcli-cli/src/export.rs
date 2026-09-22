@@ -338,7 +338,7 @@ fn is_styled(m: &Model, v: ViewId) -> bool {
 /// A `view.style` line for a visual, when it carries any style at all.
 fn push_style(s: &mut String, m: &Model, v: ViewId, view_name: &str, id: &str, handle: &str) {
     let Ok(st) = m.visual_style(v, id) else { return };
-    let fields: [(&str, &Option<String>); 12] = [
+    let fields: [(&str, &Option<String>); 13] = [
         ("fill", &st.fill),
         ("line", &st.line),
         ("line_width", &st.line_width),
@@ -351,6 +351,7 @@ fn push_style(s: &mut String, m: &Model, v: ViewId, view_name: &str, id: &str, h
         ("line_alpha", &st.line_alpha),
         ("label", &st.label),
         ("icon", &st.icon),
+        ("line_derived", &st.line_derived),
     ];
     let set: Vec<String> = fields
         .iter()

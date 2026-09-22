@@ -221,11 +221,21 @@ another search. On **4**, it lists candidates, each with a ready-to-paste
     amcli relation add Association "Refunds Service" "Ledger" --name "posts to"
     amcli element  doc id:c40a19b7 "What it is for"
     amcli element  move id:c40a19b7 -f /Application/Payments
+    amcli element  retype id:c40a19b7 TechnologyService
+    amcli element  merge "Old" --into "New"
     amcli prop set id:c40a19b7 owner team-payments
     amcli element  delete id:c40a19b7 -y
 
 Never hand-write the XML skeleton for a new model — `amcli init` writes it with
 the nine folders Archi expects.
+
+`element retype` changes the type in place — same id, relationships and
+boxes, only the figure drawn changes — and is refused, listing them, when a
+relationship it has would break the matrix for the new type; fix those first,
+there is no force. `element merge` folds one element into another that means
+the same thing: relationships and boxes are repointed to the survivor,
+duplicates and would-be loops dropped, documentation appended and properties
+copied (`--drop-doc` leaves the words behind), and the merged element deleted.
 
 Every write is checked against the ArchiMate relationship matrix first and
 refused (exit 5) if the standard forbids it — and the refusal names what *is*

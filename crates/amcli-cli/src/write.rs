@@ -48,6 +48,27 @@ pub enum ElementCmd {
     },
     /// Delete an element and everything that depends on it.
     Delete { selector: String },
+    /// Change an element's type in place: same id, name, documentation,
+    /// properties, relationships and boxes; only the figure drawn changes.
+    /// Refused when a relationship it has would break the matrix.
+    Retype {
+        selector: String,
+        /// The new ArchiMate type, e.g. TechnologyService.
+        r#type: String,
+    },
+    /// Fold an element into another that means the same thing: its
+    /// relationships and boxes are repointed, its documentation and
+    /// properties carried over, and it is deleted.
+    Merge {
+        selector: String,
+        /// The element that survives.
+        #[arg(long)]
+        into: String,
+        /// Leave the merged element's documentation behind rather than
+        /// appending it to the survivor's.
+        #[arg(long)]
+        drop_doc: bool,
+    },
 }
 
 #[derive(Subcommand, Clone)]
@@ -147,6 +168,37 @@ fn invalid(e: impl std::fmt::Display) -> CliError {
     CliError::new(Code::Invalid, "invalid", e.to_string())
 }
 
+/// A refused retype or merge. When the refusal is a list of relationships
+/// the matrix would no longer permit, each is a row — id, type, the other
+/// end and what is permitted for that pair — so the fix is a read away.
+/// There is no `--force`: the relationships are fixed first, on purpose.
+pub fn refused(e: amcli_model::EditError) -> CliError {
+    let amcli_model::EditError::IllegalRelationships(list) = e else { return invalid(e) };
+    let rows = list
+        .iter()
+        .map(|r| {
+            Row::new()
+                .s("id", r.id.clone())
+                .s("type", r.rel)
+                .s("direction", r.direction)
+                .s("other", r.other.clone())
+                .s("other_name", r.other_name.clone())
+                .s("other_type", r.other_type.clone())
+                .s("permitted", r.permitted.join(","))
+        })
+        .collect();
+    CliError::new(
+        Code::Invalid,
+        "illegal_relationships",
+        format!(
+            "{} relationship(s) would break the ArchiMate matrix; nothing was changed",
+            list.len()
+        ),
+    )
+    .hint("delete or re-type the listed relationships first, then re-run")
+    .rows(rows)
+}
+
 pub fn save(m: &Model) -> Result<(), CliError> {
     m.save().map_err(io_err)
 }
@@ -166,7 +218,9 @@ fn element_type(name: &str) -> Result<ElementType, CliError> {
             .take(5)
             .collect();
         let e = CliError::new(Code::Usage, "usage", format!("`{name}` is not an element type"));
-        if close.is_empty() {
+        if RelType::from_str(name).is_some() {
+            e.hint("that is a relationship type; an element cannot become one")
+        } else if close.is_empty() {
             e.hint("run `amcli stats` to see the types this model uses")
         } else {
             e.hint(format!("did you mean: {}", close.join(", ")))
@@ -280,7 +334,50 @@ fn element(opts: &Opts, m: &mut Model, cmd: &ElementCmd) -> Result<Output, CliEr
             )
         }
         ElementCmd::Delete { selector } => delete(opts, m, selector),
+        ElementCmd::Retype { selector, r#type } => {
+            let c = resolve(m, selector)?;
+            let to = element_type(r#type)?;
+            let row = retype(m, c, to)?;
+            written(m, opts, row)
+        }
+        ElementCmd::Merge { selector, into, drop_doc } => {
+            let a = resolve(m, selector)?;
+            let b = resolve(m, into)?;
+            let row = merge(m, a, b, !*drop_doc)?;
+            written(m, opts, row)
+        }
     }
+}
+
+/// Retype in memory and describe it: the old and new type, where it is filed
+/// now, and how many views draw it — the figure on each of them changes.
+pub fn retype(m: &mut Model, c: ConceptId, to: ElementType) -> Result<Row, CliError> {
+    let from = m.concept(c).kind.name().to_string();
+    m.retype(c, to).map_err(refused)?;
+    let views = Graph::build(m).views_of(c).len();
+    let concept = m.concept(c);
+    Ok(Row::new()
+        .s("id", concept.id.clone())
+        .s("name", concept.name.clone())
+        .s("from", from)
+        .s("to", to.info().short)
+        .s("folder", m.folder_path_of(concept))
+        .n("views", views as i64))
+}
+
+/// Merge in memory and describe it by count: relationships repointed,
+/// relationships dropped as twins or loops, boxes repointed, and the views
+/// that now show the survivor more than once.
+pub fn merge(m: &mut Model, a: ConceptId, b: ConceptId, keep_doc: bool) -> Result<Row, CliError> {
+    let (aid, bid) = (m.concept(a).id.clone(), m.concept(b).id.clone());
+    let done = m.merge_elements(a, b, keep_doc).map_err(refused)?;
+    Ok(Row::new()
+        .s("merged", aid)
+        .s("into", bid)
+        .n("relationships", done.relationships.len() as i64)
+        .n("dropped", done.dropped.len() as i64)
+        .n("objects", done.objects.len() as i64)
+        .s("duplicated_on", done.duplicated_on.join(", ")))
 }
 
 fn delete(opts: &Opts, m: &mut Model, selector: &str) -> Result<Output, CliError> {

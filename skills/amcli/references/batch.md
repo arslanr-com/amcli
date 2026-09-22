@@ -19,6 +19,8 @@ up, and no rollback step that could itself fail.
     {"op":"element.doc","target":"id:abc","text":"…"}
     {"op":"element.delete","target":"id:abc","if_present":true}
     {"op":"relation.delete","target":"id:abc","if_present":true}
+    {"op":"element.retype","target":"ref:x","type":"TechnologyService"}
+    {"op":"element.merge","target":"Old name","into":"ref:x","drop_doc":false}
     {"op":"prop.set","target":"ref:x","key":"owner","value":"team-a"}
     {"op":"prop.unset","target":"ref:x","key":"owner"}
     {"op":"folder.add","parent":"/Application","name":"Payments"}
@@ -51,6 +53,30 @@ with its contents under another folder of the same tree; a folder never
 leaves the top-level folder of its type, and the top-level folders
 themselves cannot be renamed or moved.
 
+`element.retype` changes an element's type in place — same id, name,
+documentation, properties, relationships and boxes; only the figure drawn
+changes, and the element moves to the top-level folder Archi keeps the new
+type in unless it is already somewhere under it. It is refused, exit 5 and
+nothing written, when a relationship the element has would break the matrix
+for the new type; the rows list each one with its id, type, other end and
+what is permitted, and you fix those first — there is no force. A
+relationship, a junction and a relationship type are refused outright.
+
+`element.merge` folds `target` into `into`, two elements that mean the same
+thing, and deletes `target`. Every relationship at it is repointed to the
+survivor; one that would then be the twin of a relationship the survivor
+already has — same type, same other end, same direction — is dropped and its
+lines draw the twin, and a relationship between the two would loop and is
+dropped with its lines. Every box that showed it shows the survivor, where
+it was and styled as it was; a view that then shows the survivor twice is
+allowed and named in `duplicated_on`. The survivor keeps its documentation
+and the merged element's, if different, is appended as a new paragraph
+unless `"drop_doc":true`; properties the survivor lacks are copied, ones it
+has keep its value, and a differing `src` or `source` is gathered into
+`supporting-source`. Refused like a retype when a repointed relationship
+would break the matrix. A `ref:` bound to the merged element names the
+survivor from that line on.
+
 `relation.delete` takes the relationship itself, which you address by id or by
 a `ref:` from an earlier line; a relationship rarely has a name to call it by.
 `amcli get` on either end lists the relationships it touches with their ids,
@@ -76,7 +102,7 @@ same fields, and takes a `ref:` wherever it takes a concept:
     {"op":"view.group","view":"Payments","name":"Card rails","ref":"g1","into":"Checkout","x":0,"y":0,"width":400,"height":140}
     {"op":"view.add","view":"Payments","target":"Acquirer","into":"ref:g1"}
     {"op":"view.note","view":"Payments","text":"Sandbox only until go-live","ref":"n1","into":"ref:g1","x":0,"y":0,"width":300,"height":60}
-    {"op":"view.style","view":"Payments","target":"ref:g1","fill":"#eef5fc","line":"#a4b4c5","line_width":"2","font_size":"20","font_face":"Arial","font_style":"bold","font":"","font_color":"#183047","text_align":"left","text_position":"top","border":"rectangle","alpha":"255","line_alpha":"255","label":"${name}\nap-south-1","icon":"hide"}
+    {"op":"view.style","view":"Payments","target":"ref:g1","fill":"#eef5fc","line":"#a4b4c5","line_width":"2","font_size":"20","font_face":"Arial","font_style":"bold","font":"","font_color":"#183047","text_align":"left","text_position":"top","border":"rectangle","alpha":"255","line_alpha":"255","label":"${name}\nap-south-1","icon":"hide","line_derived":"false"}
     {"op":"view.connect","view":"Payments","source":"ref:fc2","target":"Acquirer","relationship":"id:abc","ref":"c1"}
     {"op":"view.route","view":"Payments","target":"ref:c1","points":[[640,200],[900,200]]}
     {"op":"view.nest","view":"Payments","target":"Acquirer","into":"Checkout"}
@@ -128,8 +154,11 @@ center, bottom; on a line source, middle, target), `border` (a group:
 tabbed, rectangle; a note: dogear, rectangle, none), `alpha` and
 `line_alpha` (0–255), `label` (a label expression: `${name}`,
 `${documentation}`, `${type}`, `${property:KEY}` expand, anything else is
-literal, `\n` breaks a line) and `icon` (show, hide); Archi's own codes
-are accepted where the words are, and `""` clears a setting. Its target is
+literal, `\n` breaks a line), `icon` (show, hide) and `line_derived`
+(true, false) — Archi ignores an element's `line` unless it is `false`,
+because by default it derives the border from the fill, so a poster's
+border colours need it; Archi's own codes are accepted where the words
+are, and `""` clears a setting. Its target is
 an object id, a group's name, a concept on the view, a `ref:`, a
 connection id, or `rel:<selector>` for every line drawing that
 relationship. `view.connect` draws one relationship between two objects —
