@@ -223,8 +223,10 @@ fn walk(
         .or_else(|| (!content.is_empty()).then(|| content.clone()));
     // A label expression, as jArchi and Archi 4.8+ write it, replaces the
     // name on the figure: `${name}` and friends expand, anything else is the
-    // literal text the author typed.
-    let label = match feature("labelExpression").filter(|e| !e.trim().is_empty()) {
+    // literal text the author typed. Only an absent or empty expression falls
+    // back to the name — a blank one is a blank label, exactly as Archi draws
+    // it, which is how a poster hides a name it does not want printed.
+    let label = match feature("labelExpression").filter(|e| !e.is_empty()) {
         Some(expr) => expand_label(
             expr,
             &LabelContext {
@@ -351,7 +353,7 @@ fn collect_edges(
             .into_iter()
             .find(|(k, _)| k == "labelExpression")
             .map(|(_, v)| v)
-            .filter(|e| !e.trim().is_empty());
+            .filter(|e| !e.is_empty());
 
         // A connection may end on another connection. Those have no bounds of
         // their own, so the edge is skipped rather than drawn to the origin.

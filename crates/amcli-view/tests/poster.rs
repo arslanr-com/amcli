@@ -30,6 +30,10 @@ const POSTER: &str = r##"<?xml version="1.0" encoding="UTF-8"?>
         <child xsi:type="archimate:DiagramObject" id="id-o2" archimateElement="id-n2" textPosition="2">
           <bounds x="360" y="60" width="200" height="80"/>
         </child>
+        <child xsi:type="archimate:DiagramObject" id="id-o3" archimateElement="id-n2">
+          <bounds x="360" y="200" width="200" height="80"/>
+          <feature name="labelExpression" value=" "/>
+        </child>
         <child xsi:type="archimate:Note" id="id-t1" borderType="2" font="1|Arial|12.0|0|COCOA|1|">
           <bounds x="20" y="200" width="300" height="60"/>
           <content>Legend: numbers are flows</content>
@@ -65,6 +69,9 @@ fn a_hand_drawn_view_keeps_its_fonts_colours_borders_and_expressions() {
     assert_eq!(note.figure, Figure::Note);
     assert_eq!(note.border, 2, "a borderless note");
     assert_eq!(note.label, "Legend: numbers are flows");
+
+    let blank = scene.nodes.iter().find(|n| n.id == "id-o3").unwrap();
+    assert_eq!(blank.label, " ", "a blank expression is a blank label, not the name");
 
     let edge = &scene.edges[0];
     assert_eq!(
