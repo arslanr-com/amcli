@@ -442,9 +442,13 @@ pixels; labels use the machine's fonts, so a container with none draws no
 text and says so). A drawing saved from Archi 5 or jArchi is drawn as Archi
 shows it: a label expression on a box or a line replaces its name (`${name}`,
 `${documentation}`, `${type}`, `${property:KEY}`, `${view:name}` and
-`${model:name}` expand; anything else stays as written), `iconVisible` hides
-the type icon, `textPosition` puts the label at the top or the bottom, and a
-line between a container and what it holds is not drawn. `export mermaid` and `export dot` re-lay-out, so they are
+`${model:name}` expand; anything else stays as written), the author's fonts,
+text colours and border types are kept on boxes and on lines (a twenty-point
+bold region title stays twenty-point bold, a rectangle group is a rectangle,
+a borderless note has no border), `iconVisible` hides the type icon,
+`textPosition` puts the label at the top or the bottom, and a line between a
+container and what it holds is not drawn. `amcli web` draws the same SVG, so a
+poster someone laid out in Archi reads there as it does in Archi. `export mermaid` and `export dot` re-lay-out, so they are
 for a quick look, not for reproducing someone's diagram.
 
 ## Comparing and merging models
