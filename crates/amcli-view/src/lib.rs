@@ -201,13 +201,19 @@ fn walk(
 
     let explicit_fill = m.doc.attr(node, "fillColor").and_then(|s| parse_hex(&s));
     let fill = explicit_fill.unwrap_or(fill);
-    let line =
-        m.doc.attr(node, "lineColor").and_then(|s| parse_hex(&s)).unwrap_or_else(|| match figure {
-            // Archi derives an element's border from its fill; notes, groups
-            // and connections use the plain default.
-            Figure::Note | Figure::Tabbed => notation::DEFAULT_LINE,
-            _ => fill.derived_line(),
-        });
+    // An element's border is derived from its fill unless the object's
+    // `deriveElementLineColor` feature says otherwise — Archi ignores an
+    // explicit `lineColor` on an element until that feature is `false`. A
+    // note or a group has no derived colour, so its own is always used.
+    let explicit_line = m.doc.attr(node, "lineColor").and_then(|s| parse_hex(&s)).filter(|_| {
+        concept.is_none()
+            || matches!(figure, Figure::Note | Figure::Tabbed)
+            || feature("deriveElementLineColor") == Some("false")
+    });
+    let line = explicit_line.unwrap_or_else(|| match figure {
+        Figure::Note | Figure::Tabbed => notation::DEFAULT_LINE,
+        _ => fill.derived_line(),
+    });
 
     let content = m.doc.child_named(node, "content").map(|n| m.doc.text(n)).unwrap_or_default();
     // A note has no name; what it says is its label.
