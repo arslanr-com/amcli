@@ -271,6 +271,27 @@ The refresh procedure is in the header of PROVENANCE.toml itself.
   the one place that knows this, and every insertion into a concept or view
   node goes through it — a documentation written at index 0 of a view is a
   line Archi's next save moves, and a round trip that is not byte-identical.
+- **Inside a diagram object the children are ordered too**: `<bounds>`, then
+  `<feature>`, then the `<sourceConnection>`s leaving it, then the `<child>`
+  objects nested in it, then a Note's `<content>`, then documentation and
+  properties. `object_slot_for` in `edit.rs` is the one place that knows it,
+  and every insertion into an object goes through it — a connection appended
+  after a nested child is a line Archi's next save moves.
+- **A box nested in a box stands for the relationship between them.** Archi's
+  default hides every relationship type between a container and what it
+  holds, and deletes the connection when a box is dragged into another.
+  `undrawn_connection` returns `None` for such a pair, `Graph::build` counts
+  the relationship as on the view, `compile` skips the line, and
+  `nest_view_object` removes it. Anything that draws a line must ask
+  `undrawn_connection` first.
+- **A drawing from Archi 5 or jArchi carries `<feature>` lines** —
+  `labelExpression`, `iconVisible`, `deriveElementLineColor` — and `compile`
+  reads them. A label expression replaces the name on the figure; keep
+  `expand_label` conservative, because a reference it does not know is left
+  visible on purpose.
+- **`diff` and `merge` compare blocks in canonical form** (`canon.rs`): sorted
+  attributes, resolved entities, EMF defaults dropped. Archi's re-save noise
+  must never count as a change there, and a real change must always count.
 - `AccessRelationship/@accessType`: **0 is Write**, 1 Read, 2 Unspecified,
   3 Read/Write. The obvious guess is wrong.
 - `<bounds>` is a child element. `x`/`y` are parent-relative and may be negative;

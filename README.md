@@ -185,6 +185,9 @@ amcli apply batch.jsonl                       # many edits, one write, all or no
 amcli validate                                # rules, with a `fix` per finding
 amcli view auto "Refunds" --from "Refund Service" -n 2
 amcli view move "Refunds" -f /Views/Payments  # file it; the id does not change
+amcli view add "Refunds" "Fraud Rules" --into "Fraud Check"   # nested, as Archi draws containment: no line
+amcli view group "Refunds" "Card rails"       # a titled box; view note puts free text on the canvas
+amcli folder rename /Views/Payments "Payments and Refunds"   # one attribute, not a new folder and a move
 amcli export views                            # the batch that rebuilds every view
 amcli export mermaid                          # a quick diagram for a chat window
 amcli view render "Refunds" -o refunds.png     # or .svg; --scale 2 for a slide

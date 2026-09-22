@@ -70,7 +70,7 @@ Either installer asks for nothing, never elevates, and never edits a shell
 config. If no prebuilt binary matches the platform it builds one with cargo on
 its own. Do not pipe either from a URL — they are already on disk.
 
-This skill is written for **amcli 0.15.0**. The installer always gives you the
+This skill is written for **amcli 0.16.0**. The installer always gives you the
 newest *release*, and this file ships from the repository's main branch, so
 for a short while after a change lands the binary can be one release behind
 what is described here. If a command or flag below is refused, the binary
@@ -261,10 +261,12 @@ an earlier turn and are writing now:
 `ref` names a line's result so a later line can point at it before its id
 exists. `if_absent` makes the batch safe to re-run. If any line fails, nothing
 is written and the file is byte-identical. View operations go in the same
-batch — `view.create`, `view.add`, `view.auto`, `view.layout`, `view.rename`,
-`view.move`, `view.delete`, same fields as the commands — so a view is built
-and laid out with the concepts it shows, in one write; `references/batch.md`
-has those and the folder ops.
+batch — `view.create`, `view.add` (with `into` to nest), `view.group`,
+`view.note`, `view.nest`, `view.sync`, `view.auto`, `view.layout`,
+`view.rename`, `view.move`, `view.delete`, same fields as the commands — so a
+view is built and laid out with the concepts it shows, in one write;
+`references/batch.md` has those and the folder ops, `folder.rename` and
+`folder.move` included.
 
 Deletes go in a batch too — `element.delete`, `relation.delete`, `prop.unset` —
 which is what lets a change that is really a *replacement* land as one write.
@@ -301,6 +303,11 @@ mirrors — and never deletes anyone's modelling.
     amcli view create "Refund Flow" -f /Views/Payments
     amcli view auto "Refund Flow" --from "Refund Service" -n 2
     amcli view add "Refund Flow" "Fraud Check" # drawn *and* wired to what is there; a repeat adds nothing
+    amcli view add "Refund Flow" "Fraud Rules" --into "Fraud Check"   # nested inside it; no line, the nesting says it
+    amcli view group "Refund Flow" "Card rails"                       # a titled box that stands for no concept
+    amcli view note "Refund Flow" "Sandbox until go-live" --into "Card rails"
+    amcli view nest "Refund Flow" "Fraud Rules" --into "Card rails"   # move a box into another; no --into puts it back on top
+    amcli view sync "Refund Flow"              # draw what the model says between members and the view does not show
     amcli view layout "Refund Flow" --relayout-all
     amcli view rename "Refund Flow" "Refunds"
     amcli view move "Refunds" -f /Views/Payments   # re-file, id unchanged
@@ -316,6 +323,22 @@ mirrors — and never deletes anyone's modelling.
 stays where it is, the row says `added false`, and any relationship it can
 newly draw to what is there is drawn — so a rebuild batch that re-adds every
 member is re-runnable and never leaves a second box for one element.
+
+**A box inside a box is how Archi shows the relationship between them**, and
+it draws no line for it — by its default preferences, for every relationship
+type. amcli follows that rule exactly. `view add --into` draws the new box
+inside a concept already on the view, a group (by its name) or any object (by
+its id); the container grows to hold it, and no line is drawn between the two.
+A relationship whose two ends a view nests counts as *on* that view, so
+`views=0` does not report it, and `relation add` does not draw a line
+between a container and what it holds. `view nest` moves a box already on
+the view into another one — keeping its place on the canvas and removing any
+line between the two, exactly as dragging does in Archi — or, with no
+`--into`, back to the top, after which `view sync` draws the lines again.
+`view layout` lays each container's children out inside it, deepest first,
+and sizes every container to what it holds. `view group` puts a titled box
+that stands for no concept on the view, `view note` free text; both take
+`--into`, and `view note --object ID "…"` rewrites a note already there.
 
 A view name is unique: creating a second view with a name already in use is exit
 6. Pass `--replace` to overwrite the old one, which is what makes a
@@ -351,9 +374,14 @@ second one, so a script may simply declare the folders it needs. It must be
 under `/Views`: Archi never shows a diagram filed anywhere else, so amcli
 refuses (exit 5) rather than writing a model with a view you cannot open.
 Re-filing never changes a view's id, so a regenerate-everything script keeps
-producing the same diff. `folder delete` removes an empty folder and refuses a
-full one; both folder commands take an `id:` as well as a path, which is the
-only way to address two folders that ended up sharing one.
+producing the same diff. `folder rename /Views/Programme "Programme and
+Tracks"` changes one attribute — the id and everything inside stay put — and
+`folder move /Views/Programme/Old --parent /Views` re-files a folder with its
+contents; a folder never leaves the top-level folder of its type, and the
+top-level folders themselves are Archi's and cannot be renamed or moved.
+`folder delete` removes an empty folder and refuses a full one. Every folder
+command takes an `id:` as well as a path, which is the only way to address two
+folders that ended up sharing one.
 
 **A view has no declarative form of its own** — what it holds is only geometry
 in the file, so a diff cannot answer "which fifteen elements are on this view".
@@ -369,9 +397,14 @@ The round trip is exact, and re-running it changes nothing, so this is the way
 to regenerate views from something a human reviewed. Do **not** keep such a
 file beside the model as the source of truth: it is derived, and a derived file
 kept by hand goes stale. Generate it when you need to read or change a view,
-apply it, and let the model stay the one record. Views drawn in Archi with
-notes, groups or nested objects are the limit — `view.add` cannot put those
-back, and the export says so in a comment rather than pretending.
+apply it, and let the model stay the one record. Nesting, groups and notes
+travel: a nested box carries `into`, a group is a `view.group` line whose
+`ref` the objects inside it name, a note a `view.note` line. What does not
+travel is the styling a person gave a drawing in Archi — colours, fonts,
+bendpoints, label expressions — and a reference to another view or an image,
+which the export counts in a comment rather than pretending. A view someone
+laid out by hand in Archi is therefore not one to rebuild from its export:
+read the export to learn its members, and leave the drawing alone.
 
 `--layout` takes `auto` (the default), `layered` or `grid`; `view layout` spells
 the same flag `--algorithm` and both commands accept both names. `auto` layers
@@ -406,8 +439,41 @@ holds, because the model already has it:
 `view render` draws the geometry the model actually stores — SVG by default,
 PNG when `-o` ends in `.png` or `--as png` says so (`--scale 2` doubles the
 pixels; labels use the machine's fonts, so a container with none draws no
-text and says so). `export mermaid` and `export dot` re-lay-out, so they are
+text and says so). A drawing saved from Archi 5 or jArchi is drawn as Archi
+shows it: a label expression on a box or a line replaces its name (`${name}`,
+`${documentation}`, `${type}`, `${property:KEY}`, `${view:name}` and
+`${model:name}` expand; anything else stays as written), `iconVisible` hides
+the type icon, `textPosition` puts the label at the top or the bottom, and a
+line between a container and what it holds is not drawn. `export mermaid` and `export dot` re-lay-out, so they are
 for a quick look, not for reproducing someone's diagram.
+
+## Comparing and merging models
+
+    amcli diff before.archimate after.archimate       # what changed, block by block
+    amcli merge base.archimate ours.archimate theirs.archimate -o merged.archimate
+    amcli merge base.archimate ours.archimate theirs.archimate --prefer theirs   # settle conflicts one way
+
+Archi re-serialises the whole file on every save — attribute order, an
+omitted `y="0"`, `>` for `&gt;` — so a text diff of two saves is noise, and a
+git merge of two branches that both added things conflicts on every folder
+they both touched. Both commands compare the file *block by block*: every
+element, relationship, view and folder by its id, in a canonical form where
+that noise is not a change. `diff` reports one row per difference — `status`
+(added, removed, changed, renamed, moved), `kind`, `id`, `name`, `detail` —
+and exit 0. `merge` takes what each side changed against the base: a block
+only one side touched goes in as that side has it, a block both changed
+differently is a conflict, listed with a reason, and then nothing is written
+and the exit is 6 unless `--prefer ours|theirs` settles it. What ours has
+keeps its bytes; what comes from theirs is written in the file's own style.
+With no `-o` the result goes over OURS, which is what a git merge driver
+needs:
+
+    git config merge.amcli.driver 'amcli merge %O %A %B'
+    printf '*.archimate merge=amcli\n' >> .gitattributes
+
+After that a branch that added views while main added elements merges in
+git without anyone opening the XML. Validate after a merge as after any
+edit.
 
 ## Showing the model to a person
 
