@@ -190,6 +190,9 @@ amcli export mermaid                          # a quick diagram for a chat windo
 amcli view render "Refunds" -o refunds.png     # or .svg; --scale 2 for a slide
 amcli web                                     # look at all of it in a browser, read-only
 amcli web --no-open                           # just the URL — a container, or an agent handing it to you
+
+amcli diff before.archimate after.archimate   # what changed, block by block; Archi's re-save noise is not a change
+amcli merge base.archimate ours.archimate theirs.archimate -o merged.archimate   # three-way, or a git merge driver: amcli merge %O %A %B
 ```
 
 `amcli --help` lists everything; `amcli <command> --help` goes deep. Reads are

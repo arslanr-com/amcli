@@ -274,3 +274,95 @@ fn an_emptied_element_closes_itself_again() {
     assert_eq!(doc.text(doc.root()), "   ");
     assert_eq!(String::from_utf8(doc.to_bytes()).unwrap(), r#"<a k="v">   </a>"#);
 }
+
+// ---- grafting -------------------------------------------------------------
+
+/// A subtree copied in from another document lands in this document's style
+/// and leaves every other line exactly as it was.
+#[test]
+fn a_graft_into_a_pristine_doc_changes_only_the_inserted_lines() {
+    let dst_src = concat!(
+        "<root>\n",
+        "    <folder name=\"A\" id=\"f1\">\n",
+        "        <element id=\"e1\" name=\"one\"/>\n",
+        "        <element id=\"e3\" name=\"three\"/>\n",
+        "    </folder>\n",
+        "</root>\n"
+    );
+    // Tabs, CRLF and single quotes: none of it may leak into the destination.
+    let src_src = "<r>\r\n\t<element name='two' id='e2' xsi:type='archimate:X'>\r\n\t\t<documentation>a &gt; b &amp; c</documentation>\r\n\t\t<property key='k' value='v'/>\r\n\t\t<empty/>\r\n\t</element>\r\n</r>\r\n";
+    let mut dst = Doc::parse(dst_src.as_bytes().to_vec()).unwrap();
+    let src = Doc::parse(src_src.as_bytes().to_vec()).unwrap();
+
+    let folder = dst.child_named(dst.root(), "folder").unwrap();
+    let two = src.child_named(src.root(), "element").unwrap();
+    let copy = dst.graft(folder, 1, &src, two).unwrap();
+
+    let out = String::from_utf8(dst.to_bytes()).unwrap();
+    assert_eq!(
+        out,
+        concat!(
+            "<root>\n",
+            "    <folder name=\"A\" id=\"f1\">\n",
+            "        <element id=\"e1\" name=\"one\"/>\n",
+            "        <element name=\"two\" id=\"e2\" xsi:type=\"archimate:X\">\n",
+            "            <documentation>a &gt; b &amp; c</documentation>\n",
+            "            <property key=\"k\" value=\"v\"/>\n",
+            "            <empty/>\n",
+            "        </element>\n",
+            "        <element id=\"e3\" name=\"three\"/>\n",
+            "    </folder>\n",
+            "</root>\n"
+        )
+    );
+    // Every line that was there is still there, untouched and in order: the
+    // output minus the five inserted lines is the input.
+    let inserted = [
+        "        <element name=\"two\" id=\"e2\" xsi:type=\"archimate:X\">",
+        "            <documentation>a &gt; b &amp; c</documentation>",
+        "            <property key=\"k\" value=\"v\"/>",
+        "            <empty/>",
+        "        </element>",
+    ];
+    let kept: Vec<&str> = out.lines().filter(|l| !inserted.contains(l)).collect();
+    assert_eq!(kept, dst_src.lines().collect::<Vec<_>>());
+
+    // The copy reads back the way the source did — attribute order included.
+    assert_eq!(dst.attr_names(copy), vec!["name", "id", "xsi:type"]);
+    let re = Doc::parse(dst.to_bytes()).unwrap();
+    let f = re.child_named(re.root(), "folder").unwrap();
+    let e2 = re.children(f).nth(1).unwrap();
+    assert_eq!(re.attr(e2, "id").as_deref(), Some("e2"));
+    let doc = re.child_named(e2, "documentation").unwrap();
+    assert_eq!(re.text(doc), "a > b & c");
+    assert_eq!(re.children(e2).count(), 3);
+
+    // The source is untouched by being copied from.
+    assert!(src.is_unmodified());
+    assert_eq!(src.to_bytes(), src_src.as_bytes());
+}
+
+/// Grafting and removing the graft again is the identity, and a graft is
+/// refused where a child would be — under text.
+#[test]
+fn a_graft_removed_again_leaves_no_trace() {
+    let src = "<a>\n    <b/>\n</a>\n";
+    let mut dst = Doc::parse(src.as_bytes().to_vec()).unwrap();
+    let other = Doc::parse(b"<o><c x=\"1\"><d/></c><t>text</t></o>".to_vec()).unwrap();
+    let c = other.child_named(other.root(), "c").unwrap();
+    let t = other.child_named(other.root(), "t").unwrap();
+
+    let root = dst.root();
+    let copy = dst.graft(root, 0, &other, c).unwrap();
+    assert_eq!(
+        String::from_utf8(dst.to_bytes()).unwrap(),
+        "<a>\n    <c x=\"1\">\n        <d/>\n    </c>\n    <b/>\n</a>\n"
+    );
+    dst.remove_subtree(copy);
+    assert_eq!(dst.to_bytes(), src.as_bytes());
+
+    // Text is copied as text, and nothing can be grafted under it.
+    let tcopy = dst.graft(root, 1, &other, t).unwrap();
+    assert_eq!(dst.text(tcopy), "text");
+    assert!(dst.graft(tcopy, 0, &other, c).is_err());
+}

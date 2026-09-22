@@ -10,6 +10,7 @@ use clap::{Parser, Subcommand};
 mod apply;
 mod export;
 mod init;
+mod merge;
 mod output;
 mod read;
 mod skill;
@@ -250,6 +251,33 @@ enum Command {
         #[arg(long)]
         force: bool,
     },
+    /// What differs between two model files, block by block: concepts,
+    /// views and folders by id. Serialisation noise — attribute order,
+    /// omitted defaults, entity spelling — is not a difference.
+    Diff {
+        /// The earlier file.
+        a: PathBuf,
+        /// The later file.
+        b: PathBuf,
+    },
+    /// Three-way merge of two edits of one model, block by block. With no
+    /// -o the result goes over OURS, which makes `amcli merge %O %A %B` a
+    /// git merge driver: exit 0 when clean, 6 with nothing written when a
+    /// block changed on both sides.
+    Merge {
+        /// The common ancestor.
+        base: PathBuf,
+        /// Our side; also the destination without -o.
+        ours: PathBuf,
+        /// Their side.
+        theirs: PathBuf,
+        /// Where to write the result instead of over OURS.
+        #[arg(short = 'o', long)]
+        out: Option<PathBuf>,
+        /// Settle every conflict for one side: ours | theirs.
+        #[arg(long, value_name = "SIDE")]
+        prefer: Option<String>,
+    },
 }
 
 /// Parse, but turn "no such subcommand" into a version-skew hint.
@@ -399,6 +427,12 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         Command::Init { name, out, force } => {
             return init::run(&write_opts(cli), name, out.as_deref(), *force);
         }
+        // Nor are these: they name their files themselves.
+        Command::Diff { a, b } => return merge::diff(a, b),
+        Command::Merge { base, ours, theirs, out, prefer } => {
+            let prefer = prefer.as_deref().map(merge::Prefer::parse).transpose()?;
+            return merge::merge(&write_opts(cli), base, ours, theirs, out.as_deref(), prefer);
+        }
         _ => {}
     }
 
@@ -478,6 +512,8 @@ fn run(cli: &Cli) -> Result<Output, CliError> {
         | Command::Apply { .. }
         | Command::Skill(_)
         | Command::Init { .. }
+        | Command::Diff { .. }
+        | Command::Merge { .. }
         | Command::Web { .. }
         | Command::Validate { .. } => unreachable!("dispatched above"),
     }?;

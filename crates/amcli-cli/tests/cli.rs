@@ -2689,3 +2689,261 @@ fn an_ambiguous_discovery_names_the_model_beside_the_batch() {
         .unwrap();
     assert_eq!(out.status.code(), Some(0), "{}", String::from_utf8_lossy(&out.stderr));
 }
+
+// ---- diff and merge ---------------------------------------------------------
+
+/// Three files the binary itself built under one seed: BASE, and OURS and
+/// THEIRS each a copy of it with a different batch applied. OURS adds an
+/// element and renames another; THEIRS adds a different element and a view,
+/// and changes a third element's documentation.
+struct ThreeWay {
+    dir: tempfile::TempDir,
+}
+
+impl ThreeWay {
+    fn build() -> ThreeWay {
+        let t = ThreeWay { dir: tempfile::tempdir().unwrap() };
+        let (base, ours, theirs) = (t.file("base"), t.file("ours"), t.file("theirs"));
+        assert_eq!(t.run(&["init", "Base", "-o", &base]).0, 0);
+        t.apply(
+            &base,
+            concat!(
+                r#"{"op":"element.add","type":"ApplicationComponent","name":"Alpha","folder":"/Application","ref":"a"}"#,
+                "\n",
+                r#"{"op":"element.add","type":"BusinessActor","name":"Beta","folder":"/Business","ref":"b"}"#,
+                "\n",
+                r#"{"op":"element.add","type":"DataObject","name":"Gamma","folder":"/Application","doc":"old doc"}"#,
+                "\n",
+                r#"{"op":"relation.add","type":"Serving","source":"ref:a","target":"ref:b"}"#,
+                "\n",
+                r#"{"op":"folder.add","parent":"/Views","name":"Group"}"#,
+                "\n",
+            ),
+        );
+        std::fs::copy(&base, &ours).unwrap();
+        std::fs::copy(&base, &theirs).unwrap();
+        t.apply(
+            &ours,
+            concat!(
+                r#"{"op":"element.add","type":"ApplicationComponent","name":"Ours Added","folder":"/Application"}"#,
+                "\n",
+                r#"{"op":"element.rename","target":"Beta","name":"Beta renamed"}"#,
+                "\n",
+            ),
+        );
+        t.apply(
+            &theirs,
+            concat!(
+                r#"{"op":"element.add","type":"BusinessRole","name":"Theirs Added","folder":"/Business"}"#,
+                "\n",
+                r#"{"op":"view.create","name":"V","folder":"/Views/Group"}"#,
+                "\n",
+                r#"{"op":"view.add","view":"V","target":"Alpha"}"#,
+                "\n",
+                r#"{"op":"view.add","view":"V","target":"Beta"}"#,
+                "\n",
+                r#"{"op":"element.doc","target":"Gamma","text":"new doc"}"#,
+                "\n",
+            ),
+        );
+        t
+    }
+
+    fn file(&self, name: &str) -> String {
+        self.dir.path().join(format!("{name}.archimate")).to_str().unwrap().to_string()
+    }
+
+    /// The binary, seeded, with no `-m`: `diff` and `merge` name their files.
+    fn run(&self, args: &[&str]) -> (i32, String, String) {
+        let out = Command::cargo_bin("amcli")
+            .unwrap()
+            .env("AMCLI_ID_SEED", "three-way")
+            .args(args)
+            .output()
+            .unwrap();
+        (
+            out.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    fn apply(&self, model: &str, batch: &str) {
+        let path = self.dir.path().join("batch.jsonl");
+        std::fs::write(&path, batch).unwrap();
+        let (code, _, err) = self.run(&["-m", model, "apply", path.to_str().unwrap()]);
+        assert_eq!(code, 0, "{err}");
+    }
+
+    fn text(&self, name: &str) -> String {
+        std::fs::read_to_string(self.file(name)).unwrap()
+    }
+}
+
+#[test]
+fn merge_reconciles_two_edits_of_one_model() {
+    let t = ThreeWay::build();
+    let (base, ours, theirs, result) =
+        (t.file("base"), t.file("ours"), t.file("theirs"), t.file("result"));
+
+    // A dry run says what it would do and writes nothing.
+    let (code, out, _) = t.run(&["merge", &base, &ours, &theirs, "-o", &result, "--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert_eq!(rows(&out).len(), 3, "{out}");
+    assert!(!Path::new(&result).exists(), "a dry run writes nothing");
+
+    let (code, out, err) = t.run(&["merge", &base, &ours, &theirs, "-o", &result]);
+    assert_eq!(code, 0, "{err}");
+    let actions: Vec<(&str, &str)> = rows(&out).iter().map(|r| (r[2], r[3])).collect::<Vec<_>>();
+    assert_eq!(
+        actions,
+        vec![("Gamma", "replaced"), ("Theirs Added", "inserted"), ("V", "inserted")],
+        "{out}"
+    );
+
+    // The result is a model, and holds both sides' work.
+    let (code, _, err) = t.run(&["-m", &result, "validate"]);
+    assert_eq!(code, 0, "{err}");
+    let merged = t.text("result");
+    for wanted in ["Ours Added", "Theirs Added", "Beta renamed", "new doc", "name=\"V\""] {
+        assert!(merged.contains(wanted), "missing {wanted}:\n{merged}");
+    }
+    assert!(!merged.contains("old doc"));
+    // Ours' bytes are kept, not re-serialised: every line ours had is there
+    // verbatim except the replaced block's own and the views folder that
+    // was `<folder …/>` and now holds a view.
+    let ours_text = t.text("ours");
+    let replaced = |l: &str| l.contains("Gamma") || l.contains("old doc") || l.contains("Group");
+    for line in ours_text.lines().filter(|l| !replaced(l)) {
+        assert!(merged.contains(line), "ours' line was rewritten: {line}");
+    }
+
+    // Merging again with the result as ours is a no-op, byte for byte.
+    std::fs::copy(&result, t.file("again")).unwrap();
+    let (code, out, _) = t.run(&["merge", &base, &t.file("again"), &theirs]);
+    assert_eq!(code, 0);
+    assert_eq!(rows(&out).len(), 0, "{out}");
+    assert_eq!(t.text("again"), merged);
+
+    // Theirs identical to base leaves ours untouched, byte for byte.
+    let (code, out, _) = t.run(&["merge", &base, &ours, &base, "-o", &t.file("same")]);
+    assert_eq!(code, 0);
+    assert_eq!(rows(&out).len(), 0, "{out}");
+    assert_eq!(t.text("same"), ours_text);
+
+    // Without -o the result goes over ours — the git merge driver's `%A`.
+    std::fs::copy(&ours, t.file("inplace")).unwrap();
+    let (code, _, err) = t.run(&["merge", &base, &t.file("inplace"), &theirs]);
+    assert_eq!(code, 0, "{err}");
+    assert_eq!(t.text("inplace"), merged);
+}
+
+#[test]
+fn merge_reports_a_change_on_both_sides_as_a_conflict_and_prefer_settles_it() {
+    let t = ThreeWay::build();
+    let (base, ours, theirs, result) =
+        (t.file("base"), t.file("ours"), t.file("theirs"), t.file("result"));
+    t.apply(&ours, "{\"op\":\"element.doc\",\"target\":\"Gamma\",\"text\":\"ours doc\"}\n");
+    let ours_before = t.text("ours");
+
+    let (code, out, err) = t.run(&["merge", &base, &ours, &theirs, "-o", &result]);
+    assert_eq!(code, 6, "conflict: {err}");
+    let conflicts = rows(&out);
+    assert_eq!(conflicts.len(), 1, "{out}");
+    assert_eq!(conflicts[0][0], "element");
+    assert_eq!(conflicts[0][2], "Gamma");
+    assert!(conflicts[0][3].contains("both sides"), "{out}");
+    assert!(err.contains("--prefer"), "{err}");
+    assert!(!Path::new(&result).exists(), "a conflicted merge writes nothing");
+
+    // In place it is the same refusal, and ours is untouched.
+    let (code, _, _) = t.run(&["merge", &base, &ours, &theirs]);
+    assert_eq!(code, 6);
+    assert_eq!(t.text("ours"), ours_before);
+
+    // A side settles it.
+    let (code, out, err) =
+        t.run(&["merge", &base, &ours, &theirs, "-o", &result, "--prefer", "theirs"]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("replaced"), "{out}");
+    let merged = t.text("result");
+    assert!(merged.contains("new doc") && !merged.contains("ours doc"), "{merged}");
+    assert!(merged.contains("Theirs Added") && merged.contains("Ours Added"));
+
+    let (code, _, err) =
+        t.run(&["merge", &base, &ours, &theirs, "-o", &result, "--prefer", "ours"]);
+    assert_eq!(code, 0, "{err}");
+    let merged = t.text("result");
+    assert!(merged.contains("ours doc") && !merged.contains("new doc"), "{merged}");
+    assert!(merged.contains("Theirs Added"), "the rest of theirs still comes across");
+
+    let (code, _, err) = t.run(&["merge", &base, &ours, &theirs, "--prefer", "mine"]);
+    assert_eq!(code, 2, "{err}");
+}
+
+#[test]
+fn diff_lists_exactly_the_changes_and_ignores_serialisation_noise() {
+    let t = ThreeWay::build();
+    let (base, theirs) = (t.file("base"), t.file("theirs"));
+
+    let (code, out, err) = t.run(&["diff", &base, &theirs]);
+    assert_eq!(code, 0, "{err}");
+    let mut found: Vec<(&str, &str, &str, &str)> =
+        rows(&out).iter().map(|r| (r[0], r[1], r[3], r[4])).collect();
+    found.sort();
+    assert_eq!(
+        found,
+        vec![
+            ("added", "element", "Theirs Added", "/Business"),
+            ("added", "view", "V", "/Views/Group"),
+            ("changed", "element", "Gamma", "documentation"),
+        ],
+        "{out}"
+    );
+    let (_, json, _) = t.run(&["diff", &base, &theirs, "-F", "json"]);
+    assert!(json.contains(r#""differences":3"#), "{json}");
+
+    let (_, out, _) = t.run(&["diff", &base, &t.file("ours")]);
+    let mut found: Vec<(&str, &str)> = rows(&out).iter().map(|r| (r[0], r[4])).collect();
+    found.sort();
+    assert_eq!(
+        found,
+        vec![("added", "/Application"), ("renamed", "name Beta → Beta renamed")],
+        "{out}"
+    );
+
+    // Another tool's save of the same model — attributes shuffled on one
+    // element, a default written out on the view, `>` spelled as an entity —
+    // is not a difference.
+    let original = t.text("theirs");
+    let shuffled = original
+        .replacen(
+            r#"<element xsi:type="archimate:DataObject" name="Gamma""#,
+            r#"<element name="Gamma" xsi:type="archimate:DataObject""#,
+            1,
+        )
+        .replacen(r#"<bounds x="0" y="0" "#, r#"<bounds "#, 1)
+        .replacen("new doc", "new doc &gt; old", 1);
+    assert_ne!(shuffled, original, "the copy is a different file");
+    let noisy = t.file("noisy");
+    std::fs::write(&noisy, shuffled).unwrap();
+    let (code, out, _) = t.run(&["diff", &theirs, &noisy]);
+    assert_eq!(code, 0);
+    assert_eq!(rows(&out).len(), 1, "only the documentation really changed: {out}");
+    assert_eq!(rows(&out)[0][4], "documentation");
+
+    // With the same documentation spelled two ways: nothing at all.
+    let same = original
+        .replacen(
+            r#"<element xsi:type="archimate:DataObject" name="Gamma""#,
+            r#"<element name="Gamma" xsi:type="archimate:DataObject""#,
+            1,
+        )
+        .replacen(r#"<bounds x="0" y="0" "#, r#"<bounds "#, 1);
+    std::fs::write(&noisy, same).unwrap();
+    let (code, out, _) = t.run(&["diff", &theirs, &noisy]);
+    assert_eq!(code, 0);
+    assert_eq!(out, "", "no difference: {out}");
+    let (_, json, _) = t.run(&["diff", &theirs, &noisy, "-F", "json"]);
+    assert!(json.contains(r#""differences":0"#), "{json}");
+}

@@ -524,6 +524,47 @@ impl Doc {
         self.insert_child(parent, at, b)
     }
 
+    /// Copy an element out of another document, with everything under it,
+    /// to sit under `parent` at `at`. Returns the copy's root.
+    ///
+    /// The copy is built node by node with [`NodeBuilder`] and inserted like
+    /// anything else this library creates, so it is written in *this*
+    /// document's style — its indentation and line ending — rather than
+    /// carried over as the source's bytes. Attribute order, attribute values,
+    /// character content and every descendant come across as read; entities
+    /// are resolved on the way in and escaped again on the way out, which is
+    /// why a `&gt;` in the source and a `>` here mean the same thing.
+    ///
+    /// Refuses, like [`Doc::insert_child`], to put an element under one that
+    /// carries character content.
+    pub fn graft(
+        &mut self,
+        parent: NodeId,
+        at: usize,
+        from: &Doc,
+        node: NodeId,
+    ) -> Result<NodeId, MixedContent> {
+        let mut b = NodeBuilder::new(from.name(node));
+        for name in from.attr_names(node) {
+            b = b.attr(name, from.attr(node, name).unwrap_or_default());
+        }
+        let kids: Vec<NodeId> = from.children(node).collect();
+        if kids.is_empty() {
+            let text = from.text(node);
+            // An empty text would make the copy `<a></a>` where the source
+            // was `<a/>`; leaving it unset keeps the shape.
+            if !text.is_empty() {
+                b = b.text(text);
+            }
+        }
+        let id = self.insert_child(parent, at, b)?;
+        for k in kids {
+            let end = self.nodes[id.idx()].children.len();
+            self.graft(id, end, from, k)?;
+        }
+        Ok(id)
+    }
+
     /// Move a node, with everything under it, to a new parent.
     ///
     /// The node keeps its own bytes — only the whitespace around it is

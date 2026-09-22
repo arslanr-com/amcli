@@ -3,6 +3,7 @@
 
 use std::path::PathBuf;
 
+pub mod canon;
 pub mod container;
 pub mod edit;
 pub mod generated;
