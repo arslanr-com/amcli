@@ -150,7 +150,8 @@ properties on an object or a line: `fill`, `line`, `line_width`, the font
 as `font_size` / `font_face` / `font_style` (normal, bold, italic,
 bold-italic) or whole as `font` (Archi's `1|Arial|19.0|1|COCOA|1|`),
 `font_color`, `text_align` (left, center, right), `text_position` (top,
-center, bottom; on a line source, middle, target), `border` (a group:
+center, bottom — a group's name is at the top unless this says otherwise;
+on a line source, middle, target), `border` (a group:
 tabbed, rectangle; a note: dogear, rectangle, none), `alpha` and
 `line_alpha` (0–255), `label` (a label expression: `${name}`,
 `${documentation}`, `${type}`, `${property:KEY}` expand, anything else is

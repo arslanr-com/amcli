@@ -325,19 +325,24 @@ fn label(s: &mut String, n: &Node, text: &str, o: &Options) {
         _ => ("middle", r.x as f64 + box_w / 2.0),
     };
 
-    // A Group's text sits in its tab; a Note's starts at the top; everything
-    // else is vertically centred in the figure.
+    // A Note's text starts at the top; a Group's and everything else's goes
+    // where its text position puts it.
     let top = match n.figure {
         // A Group's name goes in the body, not in the tab: the tab is half the
         // figure wide and one line tall, and a name of any length either ran
         // out through its right edge or had to be cut down to one word. The
-        // body is the whole width and  makes it tall enough.
-        // A rectangle group carries its name along the top, as Archi draws
-        // it; a tabbed one in the body.
-        Figure::Tabbed if n.border == 1 => r.y as f64 + pad,
+        // body is the whole width. Within the body the text position decides,
+        // and a group's default is the top, just under the tab — a name
+        // centred in a tall group sat behind whatever the group holds.
         Figure::Tabbed => {
+            let body = if n.border == 1 { 0 } else { GROUP_HEADER };
             let block = lines.len() as f64 * line_h;
-            r.y as f64 + GROUP_HEADER as f64 + ((r.h - GROUP_HEADER) as f64 - block) / 2.0
+            let (y0, h) = ((r.y + body) as f64, (r.h - body) as f64);
+            match n.text_position {
+                1 => y0 + (h - block) / 2.0,
+                2 => y0 + h - pad - block,
+                _ => y0 + pad,
+            }
         }
         Figure::Note => r.y as f64 + pad,
         // Where Archi's text position puts it: at the top, in the middle, or
@@ -425,10 +430,17 @@ fn edge(s: &mut String, e: &amcli_view::Edge, o: &Options) {
     decoration(s, e.target_deco, e.points[n - 1], e.points[n - 2], &line);
 
     if !e.label.is_empty() {
-        // Halfway along the line, one text per line of the label; an author's
-        // multi-line caption stays multi-line.
-        let (a, b) = (e.points[(n - 1) / 2], e.points[n / 2]);
-        let (mx, my) = ((a.x + b.x) as f64 / 2.0, (a.y + b.y) as f64 / 2.0);
+        // Where the connection's text position puts it — by the source,
+        // halfway, or by the target — one text per line of the label; an
+        // author's multi-line caption stays multi-line.
+        let (mx, my) = match e.text_position {
+            0 => along(&e.points, 0.15),
+            2 => along(&e.points, 0.85),
+            _ => {
+                let (a, b) = (e.points[(n - 1) / 2], e.points[n / 2]);
+                ((a.x + b.x) as f64 / 2.0, (a.y + b.y) as f64 / 2.0)
+            }
+        };
         let attrs = font_attrs(e.font, e.font_color);
         let line_h = e.font.map(|f| f.size).unwrap_or(o.font_size) * 1.25;
         for (i, l) in e.label.split('\n').enumerate() {
@@ -442,6 +454,26 @@ fn edge(s: &mut String, e: &amcli_view::Edge, o: &Options) {
         }
     }
     let _ = writeln!(s, "    </g>");
+}
+
+/// The point a fraction of the way along a polyline, measured by length.
+fn along(points: &[Pt], t: f64) -> (f64, f64) {
+    let seg = |a: Pt, b: Pt| (((b.x - a.x) as f64).powi(2) + ((b.y - a.y) as f64).powi(2)).sqrt();
+    let total: f64 = points.windows(2).map(|w| seg(w[0], w[1])).sum();
+    let mut left = total * t;
+    for w in points.windows(2) {
+        let l = seg(w[0], w[1]);
+        if l > 0.0 && left <= l {
+            let f = left / l;
+            return (
+                w[0].x as f64 + (w[1].x - w[0].x) as f64 * f,
+                w[0].y as f64 + (w[1].y - w[0].y) as f64 * f,
+            );
+        }
+        left -= l;
+    }
+    let p = points[points.len() - 1];
+    (p.x as f64, p.y as f64)
 }
 
 fn decoration(s: &mut String, d: Deco, tip: Pt, back: Pt, line: &str) {

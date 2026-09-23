@@ -114,6 +114,9 @@ pub struct Edge {
     /// The font and colour the author gave the label, when they did.
     pub font: Option<Font>,
     pub font_color: Option<Rgb>,
+    /// Where along the line the label sits, as Archi's connection text
+    /// position says: 0 by the source, 1 halfway, 2 by the target.
+    pub text_position: u8,
     pub points: Vec<Pt>,
     pub dash: Option<&'static str>,
     pub source_deco: Deco,
@@ -256,7 +259,14 @@ fn walk(
         line_alpha: m.doc.attr(node, "lineAlpha").and_then(|s| s.parse().ok()).unwrap_or(255),
         line_width: m.doc.attr(node, "lineWidth").and_then(|s| s.parse().ok()).unwrap_or(1),
         text_align: m.doc.attr(node, "textAlignment").and_then(|s| s.parse().ok()).unwrap_or(2),
-        text_position: m.doc.attr(node, "textPosition").and_then(|s| s.parse().ok()).unwrap_or(1),
+        // Archi leaves the attribute out at its default. For a group that is
+        // the top — its name sits under the tab — and for anything else this
+        // renderer keeps the middle it has always drawn.
+        text_position: m
+            .doc
+            .attr(node, "textPosition")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(if figure == Figure::Tabbed { 0 } else { 1 }),
         // 0 shows the icon unless an image replaces it, 1 always, 2 never.
         icon_visible: feature("iconVisible") != Some("2"),
         font: m.doc.attr(node, "font").and_then(|f| Font::parse(&f)),
@@ -421,6 +431,7 @@ fn collect_edges(
             label,
             font: m.doc.attr(n, "font").and_then(|f| Font::parse(&f)),
             font_color: m.doc.attr(n, "fontColor").and_then(|s| parse_hex(&s)),
+            text_position: m.doc.attr(n, "textPosition").and_then(|s| s.parse().ok()).unwrap_or(1),
             points,
             dash: style.dash,
             source_deco: style.source,
